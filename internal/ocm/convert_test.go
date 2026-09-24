@@ -750,6 +750,7 @@ func getBaseCSClusterBuilder(updating bool) *arohcpv1alpha1.ClusterBuilder {
 					CustomerManaged(arohcpv1alpha1.NewAzureEtcdDataEncryptionCustomerManaged().
 						EncryptionType("kms").
 						Kms(arohcpv1alpha1.NewAzureKmsEncryption().
+							KeyVaultType(arohcpv1alpha1.AzureKmsEncryptionKeyVaultTypeKeyVault).
 							Visibility(arohcpv1alpha1.AzureKmsEncryptionVisibilityPublic).
 							ActiveKey(arohcpv1alpha1.NewAzureKmsKey().
 								KeyName("test-key").
@@ -1193,6 +1194,7 @@ func TestBuildCSCluster(t *testing.T) {
 							CustomerManaged(arohcpv1alpha1.NewAzureEtcdDataEncryptionCustomerManaged().
 								EncryptionType("kms").
 								Kms(arohcpv1alpha1.NewAzureKmsEncryption().
+									KeyVaultType(arohcpv1alpha1.AzureKmsEncryptionKeyVaultTypeKeyVault).
 									Visibility(arohcpv1alpha1.AzureKmsEncryptionVisibilityPublic).
 									ActiveKey(arohcpv1alpha1.NewAzureKmsKey().
 										KeyName("test-key").
@@ -1263,6 +1265,7 @@ func TestBuildCSCluster(t *testing.T) {
 							CustomerManaged(arohcpv1alpha1.NewAzureEtcdDataEncryptionCustomerManaged().
 								EncryptionType("kms").
 								Kms(arohcpv1alpha1.NewAzureKmsEncryption().
+									KeyVaultType(arohcpv1alpha1.AzureKmsEncryptionKeyVaultTypeKeyVault).
 									Visibility(arohcpv1alpha1.AzureKmsEncryptionVisibilityPrivate).
 									ActiveKey(arohcpv1alpha1.NewAzureKmsKey().
 										KeyName("test-key").
@@ -1308,6 +1311,7 @@ func TestBuildCSCluster(t *testing.T) {
 							CustomerManaged(arohcpv1alpha1.NewAzureEtcdDataEncryptionCustomerManaged().
 								EncryptionType("kms").
 								Kms(arohcpv1alpha1.NewAzureKmsEncryption().
+									KeyVaultType(arohcpv1alpha1.AzureKmsEncryptionKeyVaultTypeKeyVault).
 									Visibility(arohcpv1alpha1.AzureKmsEncryptionVisibilityPublic).
 									ActiveKey(arohcpv1alpha1.NewAzureKmsKey().
 										KeyName("test-key").
