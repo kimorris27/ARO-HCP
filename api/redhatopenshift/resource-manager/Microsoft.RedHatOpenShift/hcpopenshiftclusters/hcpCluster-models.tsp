@@ -388,7 +388,7 @@ model PlatformProfile {
 
   /** Azure Container Registry configuration for authenticating image pulls
    * on the cluster's worker nodes. */
-  @added(Versions.v2026_10_01_preview)
+  @added(Versions.v2026_10_01)
   @visibility(Lifecycle.Read, Lifecycle.Create, Lifecycle.Update)
   containerRegistry?: ContainerRegistryProfile;
 
@@ -543,7 +543,7 @@ union OutboundType {
 /** Azure Container Registry configuration for a cluster.
  * Configures how worker nodes authenticate container image pulls
  * from Azure Container Registry (ACR). */
-@added(Versions.v2026_10_01_preview)
+@added(Versions.v2026_10_01)
 model ContainerRegistryProfile {
   /** The user-assigned managed identity used for container registry image pulls. */
   @visibility(Lifecycle.Read, Lifecycle.Create, Lifecycle.Update)
@@ -628,7 +628,7 @@ union KeyVaultVisibility {
 }
 
 /** The type of keyvault used for KMS encryption. */
-@added(Versions.v2026_10_01_preview)
+@added(Versions.v2026_10_01)
 union KmsKeyVaultType {
   string,
 
@@ -743,7 +743,7 @@ model KmsEncryptionProfile {
   activeKey: KmsKey;
 
   /** The type of keyvault used for KMS encryption. Defaults to KeyVault when absent. */
-  @added(Versions.v2026_10_01_preview)
+  @added(Versions.v2026_10_01)
   @visibility(Lifecycle.Read, Lifecycle.Create)
   keyVaultType?: KmsKeyVaultType;
 }
