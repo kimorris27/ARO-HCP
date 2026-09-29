@@ -30,6 +30,7 @@ import (
 
 	"github.com/Azure/ARO-HCP/internal/api/coreapi"
 	"github.com/Azure/ARO-HCP/internal/api/metadataapi"
+	"github.com/Azure/ARO-HCP/internal/azure"
 	"github.com/Azure/ARO-HCP/internal/azureapi/v20240610preview/generated"
 )
 
@@ -80,8 +81,18 @@ func NewTestUserAssignedIdentity(name string) *azcorearm.ResourceID {
 	return metadataapi.Must(azcorearm.ParseResourceID(path.Join(TestResourceGroupResourceID, "providers", "Microsoft.ManagedIdentity", "userAssignedIdentities", name)))
 }
 
-func MinimumValidClusterTestCase() *coreapi.HCPOpenShiftCluster {
-	resource := coreapi.NewDefaultHCPOpenShiftCluster(metadataapi.Must(azcorearm.ParseResourceID(TestClusterResourceID)), TestLocation)
+// TestOperatorIdentityResourceGroupName is deliberately not the cluster's own resource group,
+// which an operator identity may not share.
+const TestOperatorIdentityResourceGroupName = "testOperatorIdentityResourceGroup"
+
+func NewTestOperatorUserAssignedIdentity(name string) *azcorearm.ResourceID {
+	return metadataapi.Must(azcorearm.ParseResourceID(path.Join(
+		"/subscriptions", TestSubscriptionID, "resourceGroups", TestOperatorIdentityResourceGroupName,
+		"providers", "Microsoft.ManagedIdentity", "userAssignedIdentities", name)))
+}
+
+func MinimumValidClusterTestCase() *coreapi.Cluster {
+	resource := coreapi.NewDefaultCluster(metadataapi.Must(azcorearm.ParseResourceID(TestClusterResourceID)), TestLocation)
 	resource.CustomerProperties.Version.ID = "4.20"
 	resource.CustomerProperties.DNS.BaseDomainPrefix = "testcluster"
 	resource.CustomerProperties.Etcd.DataEncryption.KeyManagementMode = metadataapi.EtcdDataEncryptionKeyManagementModeTypeCustomerManaged
@@ -122,19 +133,42 @@ func MinimumValidClusterTestCase() *coreapi.HCPOpenShiftCluster {
 		CreatedAt:     &createdAt,
 	}
 	resource.ServiceProviderProperties.ClusterUID = "00000000-0000-0000-0000-000000000000"
+	// Mirror a real create request: supply an identity for every control plane operator the
+	// service recognizes, and assign each one under .Identity. Derived from the identity config
+	// so a newly required operator does not silently invalidate this fixture.
+	clusterScopedIdentities := azure.NewClusterScopedIdentitiesConfig(azure.RoleDefinitionConfigSetNameDev)
+	controlPlaneOperators := make(map[string]*azcorearm.ResourceID, len(clusterScopedIdentities.ControlPlaneOperatorsIdentities))
+	assignedIdentities := make(map[string]*coreapi.UserAssignedIdentity, len(clusterScopedIdentities.ControlPlaneOperatorsIdentities))
+	for operatorName := range clusterScopedIdentities.ControlPlaneOperatorsIdentities {
+		identityID := NewTestOperatorUserAssignedIdentity(string(operatorName) + "-identity")
+		controlPlaneOperators[string(operatorName)] = identityID
+		assignedIdentities[identityID.String()] = &coreapi.UserAssignedIdentity{}
+	}
+	resource.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.ControlPlaneOperators = controlPlaneOperators
+	resource.Identity = &coreapi.ManagedServiceIdentity{
+		Type:                   coreapi.ManagedServiceIdentityTypeUserAssigned,
+		UserAssignedIdentities: assignedIdentities,
+	}
+	// Data plane operator identities are required too, but must NOT be assigned to the cluster
+	// resource -- validateOperatorAuthenticationAgainstIdentities rejects that.
+	dataPlaneOperators := make(map[string]*azcorearm.ResourceID, len(clusterScopedIdentities.DataPlaneOperatorsIdentities))
+	for operatorName := range clusterScopedIdentities.DataPlaneOperatorsIdentities {
+		dataPlaneOperators[string(operatorName)] = NewTestOperatorUserAssignedIdentity(string(operatorName) + "-dataplane-identity")
+	}
+	resource.CustomerProperties.Platform.OperatorsAuthentication.UserAssignedIdentities.DataPlaneOperators = dataPlaneOperators
 	pendingID := metadataapi.Must(metadataapi.NewInternalID(TestPendingClusterServiceIDPath))
 	resource.ServiceProviderProperties.PendingClusterServiceID = &pendingID
 	return resource
 }
 
-func ClusterTestCase(t *testing.T, tweaks *coreapi.HCPOpenShiftCluster) *coreapi.HCPOpenShiftCluster {
+func ClusterTestCase(t *testing.T, tweaks *coreapi.Cluster) *coreapi.Cluster {
 	resource := MinimumValidClusterTestCase()
 	require.NoError(t, mergo.Merge(resource, tweaks, mergo.WithOverride))
 	return resource
 }
 
-func MinimumValidExternalAuthTestCase() *coreapi.HCPOpenShiftClusterExternalAuth {
-	resource := coreapi.NewDefaultHCPOpenShiftClusterExternalAuth(metadataapi.Must(azcorearm.ParseResourceID(TestExternalAuthResourceID)))
+func MinimumValidExternalAuthTestCase() *coreapi.ExternalAuth {
+	resource := coreapi.NewDefaultExternalAuth(metadataapi.Must(azcorearm.ParseResourceID(TestExternalAuthResourceID)))
 	resource.Properties.Issuer.URL = "https://www.redhat.com"
 	resource.Properties.Issuer.Audiences = []string{"audience1"}
 	resource.Properties.Claim.Mappings.Username.Claim = "my-cool-claim"
@@ -148,7 +182,7 @@ func MinimumValidExternalAuthTestCase() *coreapi.HCPOpenShiftClusterExternalAuth
 	return resource
 }
 
-func ExternalAuthTestCase(t *testing.T, tweaks *coreapi.HCPOpenShiftClusterExternalAuth) *coreapi.HCPOpenShiftClusterExternalAuth {
+func ExternalAuthTestCase(t *testing.T, tweaks *coreapi.ExternalAuth) *coreapi.ExternalAuth {
 	externalAuth := MinimumValidExternalAuthTestCase()
 	require.NoError(t, mergo.Merge(externalAuth, tweaks, mergo.WithOverride))
 	return externalAuth

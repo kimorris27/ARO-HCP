@@ -30,6 +30,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	k8sutilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	utilsclock "k8s.io/utils/clock"
@@ -63,7 +64,6 @@ import (
 	"github.com/Azure/ARO-HCP/backend/pkg/controllers/clusterresources"
 	"github.com/Azure/ARO-HCP/backend/pkg/controllers/cosmosmigration"
 	"github.com/Azure/ARO-HCP/backend/pkg/controllers/datadump"
-	"github.com/Azure/ARO-HCP/backend/pkg/controllers/example"
 	externalauthcreation "github.com/Azure/ARO-HCP/backend/pkg/controllers/externalauth/creation"
 	externalauthdeletion "github.com/Azure/ARO-HCP/backend/pkg/controllers/externalauth/deletion"
 	externalauthoperations "github.com/Azure/ARO-HCP/backend/pkg/controllers/externalauth/operations"
@@ -470,12 +470,7 @@ func (b *Backend) runBackendControllersUnderLeaderElection(ctx context.Context, 
 	_, serviceProviderClusterLister := backendInformers.ServiceProviderClusters()
 	_, serviceProviderNodePoolLister := backendInformers.ServiceProviderNodePools()
 
-	subscriptionNonClusterDataDumpController := datadump.NewSubscriptionNonClusterDataDumpController(b.options.ResourcesDBClient, backendInformers)
-	clusterRecursiveDataDumpController := datadump.NewClusterRecursiveDataDumpController(b.options.ResourcesDBClient, b.options.KubeApplierDBClients, managementClusterLister, activeOperationLister, backendInformers, unionKubeApplierInformers)
 	csStateDumpController := datadump.NewCSStateDumpController(b.options.ResourcesDBClient, activeOperationLister, backendInformers, unionKubeApplierInformers, b.options.ClustersServiceClient)
-	billingDumpController := datadump.NewBillingDumpController(b.options.ResourcesDBClient, b.options.BillingDBClient, activeOperationLister, backendInformers, unionKubeApplierInformers)
-	managementClusterDumpController := datadump.NewManagementClusterDataDumpController(b.options.FleetDBClient, managementClusterLister, fleetInformers)
-	doNothingController := example.NewDoNothingExampleController(b.options.ResourcesDBClient, subscriptionLister)
 	dispatchRequestCredentialController := legacycredentialrequest.NewDispatchRequestCredentialController(
 		b.clock,
 		b.options.ResourcesDBClient,
@@ -596,6 +591,7 @@ func (b *Backend) runBackendControllersUnderLeaderElection(ctx context.Context, 
 		b.clock,
 		b.options.ResourcesDBClient,
 		b.options.ClustersServiceClient,
+		unionReadDesireLister,
 		http.DefaultClient,
 		activeOperationInformer,
 		backendInformers,
@@ -848,6 +844,12 @@ func (b *Backend) runBackendControllersUnderLeaderElection(ctx context.Context, 
 
 	azureClusterManagedIdentitiesExistenceValidationController := clustervalidation.NewClusterValidationController(
 		validationutils.NewAzureClusterManagedIdentitiesExistenceValidation(b.options.SMIClientBuilder),
+		b.options.ResourcesDBClient,
+		serviceProviderClusterLister,
+		backendInformers,
+	)
+	containerRegistryPullCredentialsValidationController := clustervalidation.NewClusterValidationController(
+		validationutils.NewContainerRegistryPullCredentialsPermissionValidation(b.options.SMIClientBuilder, b.options.CheckAccessV2ClientBuilder),
 		b.options.ResourcesDBClient,
 		serviceProviderClusterLister,
 		backendInformers,
@@ -1128,18 +1130,21 @@ func (b *Backend) runBackendControllersUnderLeaderElection(ctx context.Context, 
 				go backendInformers.RunWithContext(ctx)
 				go fleetInformers.RunWithContext(ctx)
 
+				if !cache.WaitForNamedCacheSyncWithContext(
+					ctx,
+					backendInformers.HasSynced,
+					fleetInformers.HasSynced,
+				) {
+					return
+				}
+
 				// start the union kube-applier informers controller +
 				// any consumers of its union surface. The controller
 				// reacts to management-cluster informer events, so it
 				// must start after the fleet informers above.
 				go unionKubeApplierInformersController.Run(ctx, 1)
 
-				go subscriptionNonClusterDataDumpController.Run(ctx, 20)
-				go clusterRecursiveDataDumpController.Run(ctx, 20)
 				go csStateDumpController.Run(ctx, 20)
-				go billingDumpController.Run(ctx, 20)
-				go managementClusterDumpController.Run(ctx, 20)
-				go doNothingController.Run(ctx, 20)
 				go dispatchRequestCredentialController.Run(ctx, 20)
 				go adminCredentialsDispatchRequestCredentialController.Run(ctx, 20)
 				go adminCredentialsDispatchRevokeCredentialsController.Run(ctx, 20)
@@ -1173,7 +1178,7 @@ func (b *Backend) runBackendControllersUnderLeaderElection(ctx context.Context, 
 				go operationRequestCredentialController.Run(ctx, 20)
 				go clusterServiceMatchingClusterController.Run(ctx, 20)
 				go alwaysSuccessClusterValidationController.Run(ctx, 20)
-				go deleteOrphanedCosmosResourcesController.Run(ctx, 20)
+				go deleteOrphanedCosmosResourcesController.Run(ctx, 10)
 				go missingResourceIDController.Run(ctx, 20)
 				go backfillClusterUIDController.Run(ctx, 20)
 				go orphanedBillingCleanupController.Run(ctx, 20)
@@ -1199,6 +1204,7 @@ func (b *Backend) runBackendControllersUnderLeaderElection(ctx context.Context, 
 				go controlPlaneIdentitiesPermissionsValidationController.Run(ctx, 20)
 				go nodePoolNSGBasedRequiredConnectivityValidationController.Run(ctx, 20)
 				go dataPlaneIdentitiesPermissionsValidationController.Run(ctx, 20)
+				go containerRegistryPullCredentialsValidationController.Run(ctx, 20)
 				go nodePoolVersionController.Run(ctx, 20)
 				go nodePoolActiveVersionController.Run(ctx, 20)
 				go createClusterScopedReadDesiresController.Run(ctx, 20)

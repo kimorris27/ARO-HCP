@@ -164,8 +164,7 @@ func (c *operationClusterCreate) SynchronizeOperation(ctx context.Context, key c
 	persistErr := operationalState.Error
 	if operationalState.ProvisioningState == coreapi.ProvisioningStateFailed && persistErr == nil {
 		persistErr = &coreapi.CloudErrorBody{
-			// TODO: classify other provisioning failures without exposing internal details.
-			Code:    coreapi.CloudErrorCodeInternalServerError,
+			Code:    operationalState.CloudErrorCode,
 			Message: operationalState.Message,
 		}
 	}
@@ -174,16 +173,16 @@ func (c *operationClusterCreate) SynchronizeOperation(ctx context.Context, key c
 		cluster.ServiceProviderProperties.CreateOperationCompletionDeadline != nil &&
 		c.clock.Now().After(cluster.ServiceProviderProperties.CreateOperationCompletionDeadline.Time) {
 
-		message := "cluster creation did not complete before the deadline"
-		if len(operationalState.Message) > 0 {
-			message = operationalState.Message
-		}
+		message := operationbase.DeadlineExceededMessage(
+			"cluster creation did not complete before the deadline",
+			operationalState.Message,
+		)
 		logger.Info("create operation deadline exceeded, marking as failed",
 			"deadline", cluster.ServiceProviderProperties.CreateOperationCompletionDeadline.Time,
 			"message", message)
 		operationalState.ProvisioningState = coreapi.ProvisioningStateFailed
 		persistErr = &coreapi.CloudErrorBody{
-			Code:    coreapi.CloudErrorCodeInternalServerError,
+			Code:    coreapi.CloudErrorCodeDeadlineExceeded,
 			Message: message,
 		}
 	}
@@ -200,12 +199,17 @@ func (c *operationClusterCreate) SynchronizeOperation(ctx context.Context, key c
 	return nil
 }
 
-func (c *operationClusterCreate) determineOperationState(ctx context.Context, operation *coreapi.Operation, cluster *coreapi.HCPOpenShiftCluster) (*operationbase.OperationState, error) {
+func (c *operationClusterCreate) determineOperationState(ctx context.Context, operation *coreapi.Operation, cluster *coreapi.Cluster) (*operationbase.OperationState, error) {
 	logger := utils.LoggerFromContext(ctx)
 
 	errs := []error{}
 	operationStates := []*operationbase.OperationState{}
 
+	if currState, err := c.clusterValidation(ctx, operation); err != nil {
+		errs = append(errs, utils.TrackError(err))
+	} else {
+		operationStates = append(operationStates, currState.WithSource("clusterValidation"))
+	}
 	if currState, err := c.hostedClusterOperationStatus(ctx, operation); err != nil {
 		errs = append(errs, utils.TrackError(err))
 	} else {
@@ -258,7 +262,7 @@ func (c *operationClusterCreate) determineOperationState(ctx context.Context, op
 	return picked, nil
 }
 
-func (c *operationClusterCreate) clusterServiceCreateOperationState(ctx context.Context, operation *coreapi.Operation, cluster *coreapi.HCPOpenShiftCluster) (*operationbase.OperationState, error) {
+func (c *operationClusterCreate) clusterServiceCreateOperationState(ctx context.Context, operation *coreapi.Operation, cluster *coreapi.Cluster) (*operationbase.OperationState, error) {
 	logger := utils.LoggerFromContext(ctx)
 
 	// The Cluster Service resource is created asynchronously; until its ID is
@@ -280,11 +284,11 @@ func (c *operationClusterCreate) clusterServiceCreateOperationState(ctx context.
 		return nil, utils.TrackError(err)
 	}
 	logger.Info("new status via cluster-service", "newStatus", newOperationStatus, "newOperationError", opError)
-	msg := ""
+	state := operationbase.NewOperationState(newOperationStatus, operationbase.ClusterServiceOperationMessage(clusterStatus, opError))
 	if opError != nil {
-		msg = opError.Message
+		state.WithCloudErrorCode(opError.Code)
 	}
-	return operationbase.NewOperationState(newOperationStatus, msg), nil
+	return state, nil
 }
 
 func (c *operationClusterCreate) clusterOperationStatus(ctx context.Context, operation *coreapi.Operation) (*operationbase.OperationState, error) {
@@ -306,7 +310,7 @@ func (c *operationClusterCreate) clusterOperationStatus(ctx context.Context, ope
 	return operationbase.NewOperationState(coreapi.ProvisioningStateSucceeded, ""), nil
 }
 
-func (c *operationClusterCreate) placementOperationStatus(ctx context.Context, operation *coreapi.Operation, cluster *coreapi.HCPOpenShiftCluster) (*operationbase.OperationState, error) {
+func (c *operationClusterCreate) placementOperationStatus(ctx context.Context, operation *coreapi.Operation, cluster *coreapi.Cluster) (*operationbase.OperationState, error) {
 	serviceProviderCluster, err := c.serviceProviderClusterLister.Get(ctx, operation.ExternalID.SubscriptionID, operation.ExternalID.ResourceGroupName, operation.ExternalID.Name)
 	if err != nil && !cosmosstorageutils.IsNotFoundError(err) {
 		return nil, utils.TrackError(err)
@@ -336,7 +340,7 @@ func (c *operationClusterCreate) placementOperationStatus(ctx context.Context, o
 			operationError.Message = "ARO HCP is currently experiencing capacity constraints. Try again later."
 		}
 	}
-	return operationbase.NewFailedOperationState(message, operationError), nil
+	return operationbase.NewFailedOperationState(operationError.Code, message, operationError), nil
 }
 
 // minVersionsWithValidSuccessCondition maps from <major>.<micro> to the first z-stream version that includes the fix for
@@ -471,7 +475,7 @@ func (c *operationClusterCreate) roleAssignmentsOperationStatus(ctx context.Cont
 	return operationbase.NewOperationState(coreapi.ProvisioningStateSucceeded, ""), nil
 }
 
-func (c *operationClusterCreate) shouldReconcileOperationAndResourceStatus(cluster *coreapi.HCPOpenShiftCluster) bool {
+func (c *operationClusterCreate) shouldReconcileOperationAndResourceStatus(cluster *coreapi.Cluster) bool {
 	return cluster.ServiceProviderProperties.DeletionTimestamp == nil
 }
 

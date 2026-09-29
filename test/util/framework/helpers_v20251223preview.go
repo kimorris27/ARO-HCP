@@ -59,6 +59,7 @@ type ClusterParams20251223 struct {
 	EncryptionKeyManagementMode   string
 	EncryptionType                string
 	VnetIntegrationSubnetID       string
+	DisableSwift                  bool // Test-only networking choice, independent of visibility.
 	KeyVaultVisibility            string
 	Network                       NetworkConfig
 	APIVisibility                 string
@@ -90,8 +91,9 @@ type NodePoolParams20251223 struct {
 	// Labels are Kubernetes labels propagated to NodePool nodes.
 	Labels []*hcpsdk20251223preview.Label
 	// Taints are Kubernetes taints applied to NodePool nodes.
-	Taints []*hcpsdk20251223preview.Taint
-	Tags   map[string]*string
+	Taints          []*hcpsdk20251223preview.Taint
+	Tags            map[string]*string
+	EncryptionSetID string
 }
 
 // ---------------------------------------------------------------------------
@@ -100,6 +102,7 @@ type NodePoolParams20251223 struct {
 
 func NewDefaultClusterParams20251223() ClusterParams20251223 {
 	params := ClusterParams20251223{
+		DisableSwift:       true,
 		OpenshiftVersionId: DefaultOpenshiftControlPlaneVersionId(),
 		Network: NetworkConfig{
 			NetworkType: "OVNKubernetes",
@@ -376,10 +379,11 @@ func BuildHCPClusterFromParams20251223(
 		}
 	}
 
+	tags, vnetIntegrationSubnetID := buildClusterNetworking(parameters.DisableSwift, parameters.Tags, parameters.VnetIntegrationSubnetID)
 	return hcpsdk20251223preview.HcpOpenShiftCluster{
 		Location: to.Ptr(location),
 		Identity: identity,
-		Tags:     parameters.Tags,
+		Tags:     tags,
 		Properties: &hcpsdk20251223preview.HcpOpenShiftClusterProperties{
 			Version: &hcpsdk20251223preview.VersionProfile{
 				ID:           to.Ptr(parameters.OpenshiftVersionId),
@@ -389,7 +393,7 @@ func BuildHCPClusterFromParams20251223(
 				ManagedResourceGroup:    to.Ptr(parameters.ManagedResourceGroupName),
 				NetworkSecurityGroupID:  to.Ptr(parameters.NsgResourceID),
 				SubnetID:                to.Ptr(parameters.SubnetResourceID),
-				VnetIntegrationSubnetID: to.Ptr(parameters.VnetIntegrationSubnetID),
+				VnetIntegrationSubnetID: vnetIntegrationSubnetID,
 				OperatorsAuthentication: &hcpsdk20251223preview.OperatorsAuthenticationProfile{
 					UserAssignedIdentities: uamis,
 				},
@@ -456,6 +460,10 @@ func BuildNodePoolFromParams20251223(
 			Labels:     parameters.Labels,
 			Taints:     parameters.Taints,
 		},
+	}
+
+	if parameters.EncryptionSetID != "" {
+		nodePool.Properties.Platform.OSDisk.EncryptionSetID = to.Ptr(parameters.EncryptionSetID)
 	}
 
 	if parameters.AutoScaling != nil {

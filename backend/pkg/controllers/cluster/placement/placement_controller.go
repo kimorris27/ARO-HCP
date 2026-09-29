@@ -17,6 +17,7 @@ package placement
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -51,7 +52,7 @@ const PlacementControllerName = "Placement"
 // swiftNICsPerHCP is the number of SWIFT NICs a highly-available (default)
 // HostedControlPlane consumes: one NIC per control-plane replica, three
 // replicas. The same value doubles as the conservative fallback whenever a
-// cluster's control-plane availability cannot be determined.
+// cluster's networking mode or control-plane availability cannot be determined.
 const swiftNICsPerHCP int64 = 3
 
 // singleReplicaSwiftNICsPerHCP is the number of SWIFT NICs a SingleReplica
@@ -64,31 +65,35 @@ const singleReplicaSwiftNICsPerHCP int64 = 1
 // scheduler re-checks on a fixed sub-30s cadence rather than error-based backoff.
 const placementRetryInterval = 29 * time.Second
 
-// swiftNICsForControlPlaneAvailability returns the number of SWIFT NICs a single
-// HostedControlPlane with the given control-plane availability consumes: a
-// SingleReplica control plane runs one replica and needs one NIC, while a
-// highly-available (default) control plane needs the full swiftNICsPerHCP.
-func swiftNICsForControlPlaneAvailability(availability coreapi.ControlPlaneAvailability) int64 {
-	if availability == coreapi.SingleReplicaControlPlane {
+// swiftNICsForCluster returns zero for non-SWIFT clusters, one for SWIFT
+// SingleReplica clusters, and three for other SWIFT or unknown clusters.
+func swiftNICsForCluster(cluster *coreapi.Cluster) int64 {
+	if cluster == nil {
+		return swiftNICsPerHCP
+	}
+	if cluster.CustomerProperties.Platform.VnetIntegrationSubnetID == nil {
+		return 0
+	}
+	if cluster.ServiceProviderProperties.ExperimentalFeatures.ControlPlaneAvailability == coreapi.SingleReplicaControlPlane {
 		return singleReplicaSwiftNICsPerHCP
 	}
 	return swiftNICsPerHCP
 }
 
 // swiftNICsForResourceID resolves how many SWIFT NICs the HCP identified by
-// clusterResourceID reserves, from its control-plane availability in the
+// clusterResourceID reserves, from its networking mode and availability in the
 // cluster informer cache. A cluster that cannot be resolved (nil ID, missing
 // from the cache, or an unexpected lister error) reserves the conservative
 // swiftNICsPerHCP maximum, so a cache miss never under-reserves capacity.
 func (c *placementSyncer) swiftNICsForResourceID(ctx context.Context, clusterResourceID *azcorearm.ResourceID) int64 {
-	if clusterResourceID == nil {
+	if clusterResourceID == nil || c.clusterLister == nil {
 		return swiftNICsPerHCP
 	}
 	cluster, err := c.clusterLister.Get(ctx, clusterResourceID.SubscriptionID, clusterResourceID.ResourceGroupName, clusterResourceID.Name)
 	if err != nil {
 		return swiftNICsPerHCP
 	}
-	return swiftNICsForControlPlaneAvailability(cluster.ServiceProviderProperties.ExperimentalFeatures.ControlPlaneAvailability)
+	return swiftNICsForCluster(cluster)
 }
 
 // swiftNICReservation sums swiftNICsForResourceID over a slice of cluster
@@ -181,7 +186,7 @@ func NewPlacementController(
 
 // needsWork reports whether placement is unresolved and the cluster is neither
 // deleting nor terminal. Both documents must be present.
-func (c *placementSyncer) needsWork(serviceProviderCluster *coreapi.ServiceProviderCluster, cluster *coreapi.HCPOpenShiftCluster) bool {
+func (c *placementSyncer) needsWork(serviceProviderCluster *coreapi.ServiceProviderCluster, cluster *coreapi.Cluster) bool {
 	if serviceProviderCluster.Spec.ManagementClusterResourceID != nil {
 		return false
 	}
@@ -217,14 +222,13 @@ func (c *placementSyncer) SyncOnce(ctx context.Context, key controllerutils.HCPC
 	}
 	// Fresh capacity-aware selection: evaluate management clusters paired
 	// with their scheduling documents, then let selectByCapacity perform all
-	// candidate elimination and choose the emptiest eligible one. The new HCP
-	// reserves swift NICs according to its own control-plane availability (a
-	// SingleReplica control plane needs one NIC, else swiftNICsPerHCP).
+	// candidate elimination and choose the preferred eligible one. The new HCP
+	// reserves swift NICs according to its networking mode and availability.
 	evaluations, err := c.evaluateManagementClusters(ctx)
 	if err != nil {
 		return err
 	}
-	requiredSwiftNICs := swiftNICsForControlPlaneAvailability(cluster.ServiceProviderProperties.ExperimentalFeatures.ControlPlaneAvailability)
+	requiredSwiftNICs := swiftNICsForCluster(cluster)
 	chosen, condition := selectByCapacity(evaluations, requiredSwiftNICs)
 	if chosen == nil {
 		if err := c.recordPlacementDecision(ctx, key, serviceProviderCluster, nil, condition); err != nil {
@@ -272,6 +276,8 @@ type managementClusterEvaluation struct {
 	eligibility        eligibility
 	reason             string
 	availableResources corev1.ResourceList
+	contention         *float64
+	pendingAssignments int
 }
 
 // evaluateManagementClusters resolves eligibility and available capacity from
@@ -284,6 +290,7 @@ func (c *placementSyncer) evaluateManagementClusters(ctx context.Context) ([]man
 	}
 
 	evaluations := make([]managementClusterEvaluation, 0, len(managementClusters))
+	now := time.Now()
 	for _, managementCluster := range managementClusters {
 		if managementCluster == nil || managementCluster.ResourceID == nil {
 			continue
@@ -304,6 +311,16 @@ func (c *placementSyncer) evaluateManagementClusters(ctx context.Context) ([]man
 		evaluation := managementClusterEvaluation{
 			resourceID:         managementCluster.ResourceID,
 			availableResources: c.availableResources(ctx, scheduling),
+			contention:         resourceContention(scheduling, now),
+		}
+		if scheduling != nil {
+			pending := sets.New[string]()
+			for _, id := range scheduling.Status.PendingAssignedClusters {
+				if id != nil {
+					pending.Insert(strings.ToLower(id.String()))
+				}
+			}
+			evaluation.pendingAssignments = pending.Len()
 		}
 		// Policy and readiness take precedence over missing capacity observations.
 		switch {
@@ -328,14 +345,52 @@ func (c *placementSyncer) evaluateManagementClusters(ctx context.Context) ([]man
 	return evaluations, nil
 }
 
-// selectByCapacity chooses the eligible cluster with the most available swift-NIC
-// capacity, provided it meets requiredSwiftNICs. Ties favor the lowest resource ID.
+// resourceContention estimates HCP contention against current worker capacity,
+// not the scale ceiling. It excludes non-HCP workloads and does not reserve CPU
+// or memory for pending HCPs. Incomplete, invalid or stale observations are unknown.
+func resourceContention(scheduling *fleetapi.ManagementClusterScheduling, now time.Time) *float64 {
+	if scheduling == nil {
+		return nil
+	}
+	observed := scheduling.Status.ObservedResources
+	if observed.LastReportedAt == nil || observed.LastReportedAt.IsZero() ||
+		observed.LastReportedAt.After(now) || now.Sub(observed.LastReportedAt.Time) > 5*time.Minute {
+		return nil
+	}
+	var score float64
+	for _, name := range []corev1.ResourceName{corev1.ResourceCPU, corev1.ResourceMemory} {
+		capacity, hasCapacity := observed.Capacity[name]
+		requests, hasRequests := observed.Requests[name]
+		usage, hasUsage := observed.Usage[name]
+		if !hasCapacity || !hasRequests || !hasUsage || capacity.Sign() <= 0 || requests.Sign() < 0 || usage.Sign() < 0 {
+			return nil
+		}
+		c, r, u := capacity.AsApproximateFloat64(), requests.AsApproximateFloat64(), usage.AsApproximateFloat64()
+		for _, value := range []float64{c, r, u} {
+			if math.IsNaN(value) || math.IsInf(value, 0) {
+				return nil
+			}
+		}
+		if c <= 0 {
+			return nil
+		}
+		ratio := math.Max(r, u) / c
+		if math.IsNaN(ratio) || math.IsInf(ratio, 0) {
+			return nil
+		}
+		score = math.Max(score, ratio)
+	}
+	return &score
+}
+
+// selectByCapacity chooses an eligible cluster meeting requiredSwiftNICs. SWIFT
+// placements prefer the most available NICs. Zero-NIC placements prefer lower
+// known contention, then fewer pending assignments, then the lowest resource ID.
+// If all scores are unknown, legacy NIC ordering (then resource ID) is preserved.
 // A known fit yields CapacityAvailable=True regardless of other unknown evaluations.
 // Only when no fit exists do we collect rejection details and report Unknown or False.
-//
-// TODO: leverage CPU and memory as well as the average HCP resource consumption in the region for more elaborate capacity based placement decisions.
 func selectByCapacity(evaluations []managementClusterEvaluation, requiredSwiftNICs int64) (*azcorearm.ResourceID, metav1.Condition) {
-	var chosen *azcorearm.ResourceID
+	var chosen *managementClusterEvaluation
 	var highestAvailable int64
 	for _, evaluation := range evaluations {
 		if evaluation.eligibility != eligible {
@@ -345,20 +400,35 @@ func selectByCapacity(evaluations []managementClusterEvaluation, requiredSwiftNI
 		if available < requiredSwiftNICs {
 			continue
 		}
-		if chosen == nil || available > highestAvailable ||
-			(available == highestAvailable && evaluation.resourceID.String() < chosen.String()) {
-			chosen = evaluation.resourceID
+		better := chosen == nil || available > highestAvailable ||
+			(available == highestAvailable && evaluation.resourceID.String() < chosen.resourceID.String())
+		if chosen != nil && requiredSwiftNICs == 0 && (evaluation.contention != nil || chosen.contention != nil) {
+			switch {
+			case evaluation.contention == nil:
+				better = false
+			case chosen.contention == nil:
+				better = true
+			case *evaluation.contention != *chosen.contention:
+				better = *evaluation.contention < *chosen.contention
+			case evaluation.pendingAssignments != chosen.pendingAssignments:
+				better = evaluation.pendingAssignments < chosen.pendingAssignments
+			default:
+				better = evaluation.resourceID.String() < chosen.resourceID.String()
+			}
+		}
+		if better {
+			chosen = &evaluation
 			highestAvailable = available
 		}
 	}
 	if chosen == nil {
 		return nil, noPlacementCondition(evaluations, requiredSwiftNICs)
 	}
-	return chosen, metav1.Condition{
+	return chosen.resourceID, metav1.Condition{
 		Type:    coreapi.CapacityAvailableConditionType,
 		Status:  metav1.ConditionTrue,
 		Reason:  coreapi.CapacityReasonAvailable,
-		Message: "placed on " + chosen.Name,
+		Message: "placed on " + chosen.resourceID.Name,
 	}
 }
 
@@ -424,8 +494,8 @@ func noPlacementCondition(evaluations []managementClusterEvaluation, requiredSwi
 // have no real utilization metric), so this is a no-op there.
 //
 // NotReady and Pending HCPs each reserve their own swift-NIC count, resolved
-// per-cluster from control-plane availability via swiftNICsForResourceID (1
-// for SingleReplica, else swiftNICsPerHCP); nil list entries reserve nothing.
+// per-cluster via swiftNICsForResourceID (0 for non-SWIFT, 1 for SWIFT
+// SingleReplica, else swiftNICsPerHCP); nil list entries reserve nothing.
 // Capacity is bounded against the ScaleCeiling (max node count), reflecting
 // the worst case.
 func (c *placementSyncer) availableResources(ctx context.Context, scheduling *fleetapi.ManagementClusterScheduling) corev1.ResourceList {

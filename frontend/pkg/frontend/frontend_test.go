@@ -17,7 +17,12 @@ package frontend
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net/http"
@@ -44,6 +49,7 @@ import (
 	"github.com/Azure/ARO-HCP/internal/apihelpers/coreapihelpers"
 	"github.com/Azure/ARO-HCP/internal/apihelpers/metadataapihelpers"
 	"github.com/Azure/ARO-HCP/internal/apitesting/coreapitesting"
+	"github.com/Azure/ARO-HCP/internal/azure"
 	"github.com/Azure/ARO-HCP/internal/database/cosmosstorage/cosmosstorageutils"
 	"github.com/Azure/ARO-HCP/internal/database/cosmosstoragetesting/corecosmosstoragetesting"
 	"github.com/Azure/ARO-HCP/internal/ocm"
@@ -94,10 +100,12 @@ func TestOperationsList(t *testing.T) {
 		reg,
 		reg,
 		mockResourcesDBClient,
+		newTestFrontendInformers(t, mockResourcesDBClient),
 		nil,
 		newNoopAuditClient(t),
 		coreapitesting.TestLocation,
 		true,
+		azure.NewClusterScopedIdentitiesConfig(azure.RoleDefinitionConfigSetNameDev),
 	)
 
 	ctx := utils.ContextWithLogger(t.Context(), testr.New(t))
@@ -197,10 +205,12 @@ func TestSubscriptionsGET(t *testing.T) {
 				reg,
 				reg,
 				mockResourcesDBClient,
+				newTestFrontendInformers(t, mockResourcesDBClient),
 				nil,
 				newNoopAuditClient(t),
 				coreapitesting.TestLocation,
 				true,
+				azure.NewClusterScopedIdentitiesConfig(azure.RoleDefinitionConfigSetNameDev),
 			)
 
 			// Pre-populate subscription in the mock database
@@ -346,10 +356,12 @@ func TestSubscriptionsPUT(t *testing.T) {
 				reg,
 				reg,
 				mockResourcesDBClient,
+				newTestFrontendInformers(t, mockResourcesDBClient),
 				nil,
 				newNoopAuditClient(t),
 				coreapitesting.TestLocation,
 				true,
+				azure.NewClusterScopedIdentitiesConfig(azure.RoleDefinitionConfigSetNameDev),
 			)
 
 			body, err := json.Marshal(&test.subscription)
@@ -386,12 +398,89 @@ type expectedPreflightError struct {
 }
 
 func TestDeploymentPreflight(t *testing.T) {
-	tests := []struct {
-		name         string
-		resource     map[string]any
-		expectStatus coreapi.DeploymentPreflightStatus
-		expectErrors []expectedPreflightError
-	}{
+	type testCase struct {
+		name               string
+		resource           map[string]any
+		mutateResource     func(map[string]any)
+		registeredFeatures []coreapi.Feature
+		expectStatus       coreapi.DeploymentPreflightStatus
+		expectErrors       []expectedPreflightError
+	}
+	wellFormedClusterResource := map[string]any{
+		"name":       "my-hcp-cluster",
+		"type":       coreapi.ClusterResourceType.String(),
+		"location":   "eastus",
+		"apiVersion": coreapitesting.TestAPIVersion,
+		"systemData": map[string]any{
+			"createdBy":     "test-user",
+			"createdByType": "User",
+			"createdAt":     "2025-01-01T00:00:00Z",
+		},
+		"properties": map[string]any{
+			"version": map[string]any{
+				"id":           "4.20",
+				"channelGroup": "stable",
+			},
+			"api": map[string]any{
+				"visibility": "Public",
+			},
+			"platform": map[string]any{
+				"subnetId":               coreapitesting.TestSubnetResourceID,
+				"networkSecurityGroupId": coreapitesting.TestNetworkSecurityGroupResourceID,
+				"operatorsAuthentication": map[string]any{
+					"userAssignedIdentities": map[string]any{
+						"controlPlaneOperators": map[string]any{
+							"cluster-api-azure":        coreapitesting.NewTestOperatorUserAssignedIdentity("cluster-api-azure").String(),
+							"control-plane":            coreapitesting.NewTestOperatorUserAssignedIdentity("control-plane").String(),
+							"cloud-controller-manager": coreapitesting.NewTestOperatorUserAssignedIdentity("cloud-controller-manager").String(),
+							"ingress":                  coreapitesting.NewTestOperatorUserAssignedIdentity("ingress").String(),
+							"disk-csi-driver":          coreapitesting.NewTestOperatorUserAssignedIdentity("disk-csi-driver").String(),
+							"file-csi-driver":          coreapitesting.NewTestOperatorUserAssignedIdentity("file-csi-driver").String(),
+							"image-registry":           coreapitesting.NewTestOperatorUserAssignedIdentity("image-registry").String(),
+							"cloud-network-config":     coreapitesting.NewTestOperatorUserAssignedIdentity("cloud-network-config").String(),
+							"kms":                      coreapitesting.NewTestOperatorUserAssignedIdentity("kms").String(),
+						},
+						"dataPlaneOperators": map[string]any{
+							"disk-csi-driver": coreapitesting.NewTestOperatorUserAssignedIdentity("dp-disk-csi-driver").String(),
+							"file-csi-driver": coreapitesting.NewTestOperatorUserAssignedIdentity("dp-file-csi-driver").String(),
+							"image-registry":  coreapitesting.NewTestOperatorUserAssignedIdentity("dp-image-registry").String(),
+						},
+					},
+				},
+			},
+			"etcd": map[string]any{
+				"dataEncryption": map[string]any{
+					"keyManagementMode": "CustomerManaged",
+					"customerManaged": map[string]any{
+						"encryptionType": "KMS",
+						"kms": map[string]any{
+							"visibility": "Public",
+							"activeKey": map[string]any{
+								"name":      "test-key",
+								"vaultName": "test-vault",
+								"version":   "test-version",
+							},
+						},
+					},
+				},
+			},
+		},
+		"identity": map[string]any{
+			"type": "UserAssigned",
+			"userAssignedIdentities": map[string]any{
+				coreapitesting.NewTestOperatorUserAssignedIdentity("cluster-api-azure").String():        map[string]any{},
+				coreapitesting.NewTestOperatorUserAssignedIdentity("control-plane").String():            map[string]any{},
+				coreapitesting.NewTestOperatorUserAssignedIdentity("cloud-controller-manager").String(): map[string]any{},
+				coreapitesting.NewTestOperatorUserAssignedIdentity("ingress").String():                  map[string]any{},
+				coreapitesting.NewTestOperatorUserAssignedIdentity("disk-csi-driver").String():          map[string]any{},
+				coreapitesting.NewTestOperatorUserAssignedIdentity("file-csi-driver").String():          map[string]any{},
+				coreapitesting.NewTestOperatorUserAssignedIdentity("image-registry").String():           map[string]any{},
+				coreapitesting.NewTestOperatorUserAssignedIdentity("cloud-network-config").String():     map[string]any{},
+				coreapitesting.NewTestOperatorUserAssignedIdentity("kms").String():                      map[string]any{},
+			},
+		},
+	}
+	tests := []testCase{
 		{
 			name: "Unhandled resource type returns no error",
 			resource: map[string]any{
@@ -413,46 +502,13 @@ func TestDeploymentPreflight(t *testing.T) {
 			expectStatus: coreapi.DeploymentPreflightStatusSucceeded,
 		},
 		{
-			name: "Well-formed cluster resource returns no error",
-			resource: map[string]any{
-				"name":       "my-hcp-cluster",
-				"type":       coreapi.ClusterResourceType.String(),
-				"location":   "eastus",
-				"apiVersion": coreapitesting.TestAPIVersion,
-				"systemData": map[string]any{
-					"createdBy":     "test-user",
-					"createdByType": "User",
-					"createdAt":     "2025-01-01T00:00:00Z",
-				},
-				"properties": map[string]any{
-					"version": map[string]any{
-						"id":           "4.20",
-						"channelGroup": "stable",
-					},
-					"api": map[string]any{
-						"visibility": "Public",
-					},
-					"platform": map[string]any{
-						"subnetId":               coreapitesting.TestSubnetResourceID,
-						"networkSecurityGroupId": coreapitesting.TestNetworkSecurityGroupResourceID,
-					},
-					"etcd": map[string]any{
-						"dataEncryption": map[string]any{
-							"keyManagementMode": "CustomerManaged",
-							"customerManaged": map[string]any{
-								"encryptionType": "KMS",
-								"kms": map[string]any{
-									"visibility": "Public",
-									"activeKey": map[string]any{
-										"name":      "test-key",
-										"vaultName": "test-vault",
-										"version":   "test-version",
-									},
-								},
-							},
-						},
-					},
-				},
+			name:     "Well-formed cluster resource returns no error",
+			resource: wellFormedClusterResource,
+			mutateResource: func(resource map[string]any) {
+				// TestAPIVersion has no kms.visibility. Leaving it in fails strict unmarshal, and
+				// the handler then skips the resource instead of validating it.
+				kms := resource["properties"].(map[string]any)["etcd"].(map[string]any)["dataEncryption"].(map[string]any)["customerManaged"].(map[string]any)["kms"].(map[string]any)
+				delete(kms, "visibility")
 			},
 			expectStatus: coreapi.DeploymentPreflightStatusSucceeded,
 		},
@@ -570,6 +626,78 @@ func TestDeploymentPreflight(t *testing.T) {
 		},
 	}
 
+	for _, version := range []metadataapi.APIVersion{
+		metadataapi.APIVersionV20251223Preview,
+		metadataapi.APIVersionV20260630Preview,
+		metadataapi.APIVersionV20260901Preview,
+		metadataapi.APIVersionV20261001Preview,
+	} {
+		for _, swift := range []struct {
+			name       string
+			enrolled   bool
+			disable    bool
+			subnet     bool
+			privateKMS bool
+			error      *expectedPreflightError
+		}{
+			{name: "honored disable tag permits nil subnet", enrolled: true, disable: true},
+			{name: "no opt-in requires subnet", error: &expectedPreflightError{
+				message: "Required value: required unless the disable-swift experimental tag is true and ExperimentalReleaseFeatures is registered",
+				target:  "properties.platform.vnetIntegrationSubnetId",
+			}},
+			{name: "tag without AFEC requires subnet", disable: true, error: &expectedPreflightError{
+				message: "Required value: required unless the disable-swift experimental tag is true and ExperimentalReleaseFeatures is registered",
+				target:  "properties.platform.vnetIntegrationSubnetId",
+			}},
+			{name: "AFEC without tag requires subnet", enrolled: true, error: &expectedPreflightError{
+				message: "Required value: required unless the disable-swift experimental tag is true and ExperimentalReleaseFeatures is registered",
+				target:  "properties.platform.vnetIntegrationSubnetId",
+			}},
+			{name: "honored disable tag conflicts with subnet", enrolled: true, disable: true, subnet: true, error: &expectedPreflightError{
+				message: "Invalid value: \"true\": cannot disable SWIFT when customerProperties.platform.vnetIntegrationSubnetId is set",
+				target:  "tags[" + metadataapi.TagClusterDisableSwift + "]",
+			}},
+			{name: "private KMS requires subnet despite opt-in", enrolled: true, disable: true, privateKMS: true, error: &expectedPreflightError{
+				message: "Required value: required when customerProperties.etcd.dataEncryption.customerManaged.kms.visibility is Private",
+				target:  "properties.platform.vnetIntegrationSubnetId",
+			}},
+		} {
+			test := testCase{
+				name:     "SWIFT/" + string(version) + "/" + swift.name,
+				resource: wellFormedClusterResource,
+				mutateResource: func(resource map[string]any) {
+					resource["apiVersion"] = string(version)
+					if swift.disable {
+						resource["tags"] = map[string]any{metadataapi.TagClusterDisableSwift: "true"}
+					}
+					properties := resource["properties"].(map[string]any)
+					kms := properties["etcd"].(map[string]any)["dataEncryption"].(map[string]any)["customerManaged"].(map[string]any)["kms"].(map[string]any)
+					activeKey := kms["activeKey"].(map[string]any)
+					kms["vaultName"] = activeKey["vaultName"]
+					delete(activeKey, "vaultName")
+					if swift.subnet {
+						properties["platform"].(map[string]any)["vnetIntegrationSubnetId"] = coreapitesting.TestSubnetResourceID + "-swift"
+					}
+					if swift.privateKMS {
+						kms["visibility"] = "Private"
+					}
+				},
+				expectStatus: coreapi.DeploymentPreflightStatusSucceeded,
+			}
+			if swift.enrolled {
+				test.registeredFeatures = []coreapi.Feature{{
+					Name:  metadataapihelpers.Ptr(metadataapi.FeatureExperimentalReleaseFeatures),
+					State: metadataapihelpers.Ptr("Registered"),
+				}}
+			}
+			if swift.error != nil {
+				test.expectStatus = coreapi.DeploymentPreflightStatusFailed
+				test.expectErrors = []expectedPreflightError{*swift.error}
+			}
+			tests = append(tests, test)
+		}
+	}
+
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			preflightPath := path.Join(coreapitesting.TestDeploymentResourceID, "preflight")
@@ -584,20 +712,31 @@ func TestDeploymentPreflight(t *testing.T) {
 				reg,
 				reg,
 				mockResourcesDBClient,
+				newTestFrontendInformers(t, mockResourcesDBClient),
 				nil,
 				newNoopAuditClient(t),
 				coreapitesting.TestLocation,
 				true,
+				azure.NewClusterScopedIdentitiesConfig(azure.RoleDefinitionConfigSetNameDev),
 			)
 
 			subs := map[string]*coreapi.Subscription{
-				coreapitesting.TestSubscriptionID: newTestSubscription(coreapitesting.TestSubscriptionID, coreapi.SubscriptionStateRegistered, nil),
+				coreapitesting.TestSubscriptionID: newTestSubscription(coreapitesting.TestSubscriptionID, coreapi.SubscriptionStateRegistered, &coreapi.SubscriptionProperties{
+					RegisteredFeatures: &test.registeredFeatures,
+				}),
 			}
 			ctx := utils.ContextWithLogger(t.Context(), testr.New(t))
 			ts := newHTTPServer(ctx, f, mockResourcesDBClient, subs)
 
 			resource, err := json.Marshal(&test.resource)
 			require.NoError(t, err)
+			if test.mutateResource != nil {
+				var resourceCopy map[string]any
+				require.NoError(t, json.Unmarshal(resource, &resourceCopy))
+				test.mutateResource(resourceCopy)
+				resource, err = json.Marshal(resourceCopy)
+				require.NoError(t, err)
+			}
 			preflightReq := coreapi.DeploymentPreflight{
 				Resources: []json.RawMessage{resource},
 			}
@@ -627,15 +766,15 @@ func TestDeploymentPreflight(t *testing.T) {
 			} else {
 				if assert.NotNil(t, preflightResp.Error, "Expected validation errors but got none") {
 					if len(test.expectErrors) == 1 {
-						// Single error case - check main error fields
-						assert.Nil(t, preflightResp.Error.Details)
+						// Field errors are nested under the resource-level error.
+						require.Len(t, preflightResp.Error.Details, 1)
 						assert.NotEmpty(t, preflightResp.Error.Code)
 						assert.NotEmpty(t, preflightResp.Error.Message)
 						assert.NotEmpty(t, preflightResp.Error.Target)
 						// Check the expected error details
 						expected := test.expectErrors[0]
-						assert.Equal(t, expected.message, preflightResp.Error.Message)
-						assert.Equal(t, expected.target, preflightResp.Error.Target)
+						assert.Equal(t, expected.message, preflightResp.Error.Details[0].Message)
+						assert.Equal(t, expected.target, preflightResp.Error.Details[0].Target)
 					} else {
 						// Multiple errors case - check error details
 						if !assert.Equal(t, len(test.expectErrors), len(preflightResp.Error.Details), "Number of validation errors mismatch") {
@@ -692,6 +831,12 @@ func TestRequestAdminCredential(t *testing.T) {
 		tests = append(tests, test)
 	}
 
+	// A CSR is now mandatory for admin credential requests. Build one valid CSR
+	// and reuse it so these cases exercise the provisioning-state conflict logic
+	// rather than CSR validation; the required-CSR invariant itself is covered by
+	// TestRequestAdminCredentialRequiresCSR.
+	csrRequestBody := mustMarshalAdminCredentialRequestBody(t, newValidAdminCredentialCSR(t))
+
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			clusterResourceID := newClusterResourceID(t)
@@ -709,16 +854,18 @@ func TestRequestAdminCredential(t *testing.T) {
 				reg,
 				reg,
 				mockResourcesDBClient,
+				newTestFrontendInformers(t, mockResourcesDBClient),
 				nil,
 				newNoopAuditClient(t),
 				coreapitesting.TestLocation,
 				true,
+				azure.NewClusterScopedIdentitiesConfig(azure.RoleDefinitionConfigSetNameDev),
 			)
 
 			// Pre-populate the mock database with cluster and subscription
 			ctx := utils.ContextWithLogger(t.Context(), testr.New(t))
 
-			cluster := &coreapi.HCPOpenShiftCluster{
+			cluster := &coreapi.Cluster{
 				CosmosMetadata: coreapi.CosmosMetadata{
 					ResourceID:   clusterResourceID,
 					PartitionKey: strings.ToLower(clusterResourceID.SubscriptionID),
@@ -728,7 +875,7 @@ func TestRequestAdminCredential(t *testing.T) {
 						ID: clusterResourceID,
 					},
 				},
-				ServiceProviderProperties: coreapi.HCPOpenShiftClusterServiceProviderProperties{
+				ServiceProviderProperties: coreapi.ClusterServiceProviderProperties{
 					ProvisioningState:            test.clusterProvisioningState,
 					ClusterServiceID:             &clusterInternalID,
 					RevokeCredentialsOperationID: test.revokeCredentialsOperationID,
@@ -761,8 +908,8 @@ func TestRequestAdminCredential(t *testing.T) {
 			}
 			ts := newHTTPServer(ctx, f, mockResourcesDBClient, subs)
 
-			url := ts.URL + requestPath + "?api-version=" + coreapitesting.TestAPIVersion
-			resp, err := ts.Client().Post(url, "", nil)
+			url := ts.URL + requestPath + "?api-version=" + string(metadataapi.APIVersionV20260901Preview)
+			resp, err := ts.Client().Post(url, "application/json", bytes.NewReader(csrRequestBody))
 			require.NoError(t, err)
 
 			if !assert.Equal(t, test.statusCode, resp.StatusCode) {
@@ -773,6 +920,137 @@ func TestRequestAdminCredential(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestRequestAdminCredentialRequiresCSR asserts the invariant introduced
+// alongside the removal of the legacy Cluster Service break-glass path: a CSR is
+// mandatory, so a request with no body, an empty CSR, or a CSR whose subject
+// does not match the required break-glass identity is rejected with a validation
+// error rather than silently taking the legacy path.
+func TestRequestAdminCredentialRequiresCSR(t *testing.T) {
+	tests := []struct {
+		name        string
+		contentType string
+		body        []byte
+	}{
+		{
+			name:        "no request body",
+			contentType: "",
+			body:        nil,
+		},
+		{
+			name:        "empty CSR",
+			contentType: "application/json",
+			body:        mustMarshalAdminCredentialRequestBody(t, ""),
+		},
+		{
+			name:        "malformed JSON body",
+			contentType: "application/json",
+			body:        []byte("{invalid json"),
+		},
+		{
+			name:        "CSR with wrong subject",
+			contentType: "application/json",
+			body:        mustMarshalAdminCredentialRequestBody(t, newCSRWithSubject(t, "not-the-break-glass-admin", "system:unauthorized")),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			clusterResourceID := newClusterResourceID(t)
+			clusterInternalID := newClusterInternalID(t)
+
+			requestPath := path.Join(clusterResourceID.String(), "requestAdminCredential")
+
+			reg := prometheus.NewRegistry()
+			mockResourcesDBClient := corecosmosstoragetesting.NewMockResourcesDBClient()
+
+			f := NewFrontend(
+				testr.New(t),
+				nil,
+				nil,
+				reg,
+				reg,
+				mockResourcesDBClient,
+				newTestFrontendInformers(t, mockResourcesDBClient),
+				nil,
+				newNoopAuditClient(t),
+				coreapitesting.TestLocation,
+				true,
+				azure.NewClusterScopedIdentitiesConfig(azure.RoleDefinitionConfigSetNameDev),
+			)
+
+			ctx := utils.ContextWithLogger(t.Context(), testr.New(t))
+
+			// A cluster in a terminal state exists so the request would otherwise
+			// be accepted; only the missing/invalid CSR must cause the rejection.
+			cluster := &coreapi.Cluster{
+				CosmosMetadata: coreapi.CosmosMetadata{
+					ResourceID:   clusterResourceID,
+					PartitionKey: strings.ToLower(clusterResourceID.SubscriptionID),
+				},
+				TrackedResource: coreapi.TrackedResource{
+					Resource: coreapi.Resource{
+						ID: clusterResourceID,
+					},
+				},
+				ServiceProviderProperties: coreapi.ClusterServiceProviderProperties{
+					ProvisioningState: coreapi.ProvisioningStateSucceeded,
+					ClusterServiceID:  &clusterInternalID,
+				},
+			}
+			_, err := mockResourcesDBClient.HCPClusters(clusterResourceID.SubscriptionID, clusterResourceID.ResourceGroupName).Create(ctx, cluster, nil)
+			require.NoError(t, err)
+
+			subs := map[string]*coreapi.Subscription{
+				coreapitesting.TestSubscriptionID: newTestSubscription(coreapitesting.TestSubscriptionID, coreapi.SubscriptionStateRegistered, nil),
+			}
+			ts := newHTTPServer(ctx, f, mockResourcesDBClient, subs)
+
+			url := ts.URL + requestPath + "?api-version=" + string(metadataapi.APIVersionV20260901Preview)
+			var reqBody io.Reader
+			if test.body != nil {
+				reqBody = bytes.NewReader(test.body)
+			}
+			resp, err := ts.Client().Post(url, test.contentType, reqBody)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			assert.Equal(t, http.StatusBadRequest, resp.StatusCode, "expected a validation error when the CSR is missing or invalid")
+		})
+	}
+}
+
+// newValidAdminCredentialCSR builds a PEM-encoded CSR whose subject matches the
+// break-glass identity required by the frontend admin credential handler.
+func newValidAdminCredentialCSR(t *testing.T) string {
+	t.Helper()
+	return newCSRWithSubject(t, requiredCSRCommonName, requiredCSROrganization)
+}
+
+// newCSRWithSubject builds a PEM-encoded CSR with the given common name and
+// organization.
+func newCSRWithSubject(t *testing.T, commonName, organization string) string {
+	t.Helper()
+	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err, "failed to generate RSA key")
+	csrDER, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
+		Subject: pkix.Name{
+			CommonName:   commonName,
+			Organization: []string{organization},
+		},
+	}, privKey)
+	require.NoError(t, err, "failed to create certificate request")
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER}))
+}
+
+// mustMarshalAdminCredentialRequestBody marshals a versioned admin credential
+// request body carrying the given CSR.
+func mustMarshalAdminCredentialRequestBody(t *testing.T, csrPEM string) []byte {
+	t.Helper()
+	body, err := json.Marshal(map[string]string{"certificateSigningRequest": csrPEM})
+	require.NoError(t, err, "failed to marshal admin credential request body")
+	return body
 }
 
 func TestRevokeCredentials(t *testing.T) {
@@ -823,16 +1101,18 @@ func TestRevokeCredentials(t *testing.T) {
 				reg,
 				reg,
 				mockResourcesDBClient,
+				newTestFrontendInformers(t, mockResourcesDBClient),
 				nil,
 				newNoopAuditClient(t),
 				coreapitesting.TestLocation,
 				true,
+				azure.NewClusterScopedIdentitiesConfig(azure.RoleDefinitionConfigSetNameDev),
 			)
 
 			// Pre-populate the mock database with cluster
 			ctx := utils.ContextWithLogger(t.Context(), testr.New(t))
 
-			cluster := &coreapi.HCPOpenShiftCluster{
+			cluster := &coreapi.Cluster{
 				CosmosMetadata: coreapi.CosmosMetadata{
 					ResourceID:   clusterResourceID,
 					PartitionKey: strings.ToLower(clusterResourceID.SubscriptionID),
@@ -842,7 +1122,7 @@ func TestRevokeCredentials(t *testing.T) {
 						ID: clusterResourceID,
 					},
 				},
-				ServiceProviderProperties: coreapi.HCPOpenShiftClusterServiceProviderProperties{
+				ServiceProviderProperties: coreapi.ClusterServiceProviderProperties{
 					ProvisioningState:            test.clusterProvisioningState,
 					ClusterServiceID:             &clusterInternalID,
 					RevokeCredentialsOperationID: test.revokeCredentialsOperationID,

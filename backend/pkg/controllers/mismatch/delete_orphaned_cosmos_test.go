@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/util/workqueue"
 
 	azcorearm "github.com/Azure/azure-sdk-for-go/sdk/azcore/arm"
 
@@ -35,6 +36,7 @@ import (
 	"github.com/Azure/ARO-HCP/internal/apihelpers/kubeapplierapihelpers"
 	"github.com/Azure/ARO-HCP/internal/database/cosmosstoragetesting/corecosmosstoragetesting"
 	"github.com/Azure/ARO-HCP/internal/database/cosmosstoragetesting/kubeappliercosmosstoragetesting"
+	"github.com/Azure/ARO-HCP/internal/database/listertesting/corelistertesting"
 	"github.com/Azure/ARO-HCP/internal/database/listertesting/fleetlistertesting"
 	"github.com/Azure/ARO-HCP/internal/utils"
 )
@@ -233,10 +235,76 @@ func subscription(t *testing.T) *coreapi.Subscription {
 	}
 }
 
-func cluster(t *testing.T, name string) *coreapi.HCPOpenShiftCluster {
+func subscriptionWithID(t *testing.T, subscriptionID string) *coreapi.Subscription {
+	t.Helper()
+	rid := metadataapi.Must(coreapihelpers.ToSubscriptionResourceID(subscriptionID))
+	return &coreapi.Subscription{
+		CosmosMetadata: coreapi.CosmosMetadata{ResourceID: rid, PartitionKey: strings.ToLower(rid.SubscriptionID)},
+		State:          coreapi.SubscriptionStateRegistered,
+	}
+}
+
+// TestQueueAllSubscriptions_SpreadsEnqueue asserts the sweep is paced rather than
+// bursted. Enqueuing every subscription in the same instant is what exhausted the
+// Cosmos RU budget in production: each subscription costs 1 + N_managementClusters
+// single-partition scans, so a simultaneous enqueue of every registered
+// subscription overshoots the container's provisioned ceiling.
+func TestQueueAllSubscriptions_SpreadsEnqueue(t *testing.T) {
+	ctx := utils.ContextWithLogger(context.Background(), testr.New(t))
+
+	subscriptionIDs := []string{
+		"a433a095-1277-44f1-8453-8d61a4d848c2",
+		"b433a095-1277-44f1-8453-8d61a4d848c2",
+		"c433a095-1277-44f1-8453-8d61a4d848c2",
+		"d433a095-1277-44f1-8453-8d61a4d848c2",
+	}
+	subscriptions := make([]*coreapi.Subscription, 0, len(subscriptionIDs))
+	for _, id := range subscriptionIDs {
+		subscriptions = append(subscriptions, subscriptionWithID(t, id))
+	}
+
+	c := &deleteOrphanedCosmosResources{
+		name:               "DeleteOrphanedCosmosResources",
+		subscriptionLister: &corelistertesting.SliceSubscriptionLister{Subscriptions: subscriptions},
+		queue: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.DefaultTypedControllerRateLimiter[string](),
+			workqueue.TypedRateLimitingQueueConfig[string]{Name: "test"},
+		),
+	}
+	defer c.queue.ShutDown()
+
+	c.queueAllSubscriptions(ctx)
+
+	// Only the zero-delay item may be immediately ready; the rest must still be
+	// waiting in the delaying queue. A burst enqueue would make all of them ready.
+	require.LessOrEqual(t, c.queue.Len(), 1,
+		"queueAllSubscriptions must pace enqueues, not add every subscription at once")
+}
+
+// TestQueueAllSubscriptions_NoSubscriptions covers the guard that prevents a
+// divide-by-zero on an empty subscription list.
+func TestQueueAllSubscriptions_NoSubscriptions(t *testing.T) {
+	ctx := utils.ContextWithLogger(context.Background(), testr.New(t))
+
+	c := &deleteOrphanedCosmosResources{
+		name:               "DeleteOrphanedCosmosResources",
+		subscriptionLister: &corelistertesting.SliceSubscriptionLister{},
+		queue: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.DefaultTypedControllerRateLimiter[string](),
+			workqueue.TypedRateLimitingQueueConfig[string]{Name: "test"},
+		),
+	}
+	defer c.queue.ShutDown()
+
+	require.NotPanics(t, func() { c.queueAllSubscriptions(ctx) },
+		"empty subscription list must not divide by zero")
+	require.Equal(t, 0, c.queue.Len(), "no subscriptions means nothing enqueued")
+}
+
+func cluster(t *testing.T, name string) *coreapi.Cluster {
 	t.Helper()
 	rid := metadataapi.Must(coreapihelpers.ToClusterResourceID(testSubscriptionID, testResourceGroup, name))
-	return &coreapi.HCPOpenShiftCluster{
+	return &coreapi.Cluster{
 		CosmosMetadata: coreapi.CosmosMetadata{ResourceID: rid, PartitionKey: strings.ToLower(rid.SubscriptionID)},
 		TrackedResource: coreapi.TrackedResource{
 			Resource: coreapi.Resource{
@@ -249,10 +317,10 @@ func cluster(t *testing.T, name string) *coreapi.HCPOpenShiftCluster {
 	}
 }
 
-func nodePool(t *testing.T, clusterName, nodePoolName string) *coreapi.HCPOpenShiftClusterNodePool {
+func nodePool(t *testing.T, clusterName, nodePoolName string) *coreapi.NodePool {
 	t.Helper()
 	rid := metadataapi.Must(coreapihelpers.ToNodePoolResourceID(testSubscriptionID, testResourceGroup, clusterName, nodePoolName))
-	return &coreapi.HCPOpenShiftClusterNodePool{
+	return &coreapi.NodePool{
 		CosmosMetadata: coreapi.CosmosMetadata{ResourceID: rid, PartitionKey: strings.ToLower(rid.SubscriptionID)},
 		TrackedResource: coreapi.TrackedResource{
 			Resource: coreapi.Resource{

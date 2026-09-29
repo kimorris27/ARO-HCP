@@ -59,6 +59,7 @@ type ClusterParams20260630 struct {
 	EncryptionKeyManagementMode   string
 	EncryptionType                string
 	VnetIntegrationSubnetID       string
+	DisableSwift                  bool // Test-only networking choice, independent of visibility.
 	KeyVaultVisibility            string
 	IngressType                   string
 	Network                       NetworkConfig
@@ -90,6 +91,7 @@ type NodePoolParams20260630 struct {
 	AvailabilityZone string
 	AutoRepair       bool
 	Tags             map[string]*string
+	EncryptionSetID  string
 }
 
 // ---------------------------------------------------------------------------
@@ -98,6 +100,7 @@ type NodePoolParams20260630 struct {
 
 func NewDefaultClusterParams20260630() ClusterParams20260630 {
 	params := ClusterParams20260630{
+		DisableSwift:       true,
 		OpenshiftVersionId: DefaultOpenshiftControlPlaneVersionId(),
 		Network: NetworkConfig{
 			NetworkType: "OVNKubernetes",
@@ -503,10 +506,11 @@ func BuildHCPClusterFromParams20260630(
 		}
 	}
 
+	tags, vnetIntegrationSubnetID := buildClusterNetworking(parameters.DisableSwift, parameters.Tags, parameters.VnetIntegrationSubnetID)
 	return hcpsdk20260630preview.HcpOpenShiftCluster{
 		Location: to.Ptr(location),
 		Identity: identity,
-		Tags:     parameters.Tags,
+		Tags:     tags,
 		Properties: &hcpsdk20260630preview.HcpOpenShiftClusterProperties{
 			Version: &hcpsdk20260630preview.VersionProfile{
 				ID:           to.Ptr(parameters.OpenshiftVersionId),
@@ -516,7 +520,7 @@ func BuildHCPClusterFromParams20260630(
 				ManagedResourceGroup:    to.Ptr(parameters.ManagedResourceGroupName),
 				NetworkSecurityGroupID:  to.Ptr(parameters.NsgResourceID),
 				SubnetID:                to.Ptr(parameters.SubnetResourceID),
-				VnetIntegrationSubnetID: to.Ptr(parameters.VnetIntegrationSubnetID),
+				VnetIntegrationSubnetID: vnetIntegrationSubnetID,
 				OperatorsAuthentication: &hcpsdk20260630preview.OperatorsAuthenticationProfile{
 					UserAssignedIdentities: uamis,
 				},
@@ -702,6 +706,10 @@ func BuildNodePoolFromParams20260630(
 			},
 			AutoRepair: to.Ptr(parameters.AutoRepair),
 		},
+	}
+
+	if parameters.EncryptionSetID != "" {
+		nodePool.Properties.Platform.OSDisk.EncryptionSetID = to.Ptr(parameters.EncryptionSetID)
 	}
 
 	if parameters.AutoScaling != nil {

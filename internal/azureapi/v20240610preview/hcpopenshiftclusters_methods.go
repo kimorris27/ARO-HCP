@@ -34,7 +34,7 @@ type HcpOpenShiftCluster struct {
 	generated.HcpOpenShiftCluster
 }
 
-var _ coreapi.VersionedCreatableResource[coreapi.HCPOpenShiftCluster] = &HcpOpenShiftCluster{}
+var _ coreapi.VersionedCreatableResource[coreapi.Cluster] = &HcpOpenShiftCluster{}
 
 func (h *HcpOpenShiftCluster) NewExternal() any {
 	return &HcpOpenShiftCluster{}
@@ -335,10 +335,10 @@ func newManagedServiceIdentity(from *coreapi.ManagedServiceIdentity) *generated.
 	}
 }
 
-// NewHCPOpenShiftCluster converts an internal representation to this API version.
+// NewCluster converts an internal representation to this API version.
 // If from is nil, returns a defaulted external object for use on the write path
 // where defaults are applied before unmarshaling the request body.
-func (v version) NewHCPOpenShiftCluster(from *coreapi.HCPOpenShiftCluster) coreapi.VersionedHCPOpenShiftCluster {
+func (v version) NewCluster(from *coreapi.Cluster) coreapi.VersionedCluster {
 	if from == nil {
 		ret := &HcpOpenShiftCluster{}
 		SetDefaultValuesCluster(ret)
@@ -382,8 +382,8 @@ func (c *HcpOpenShiftCluster) GetVersion() coreapi.Version {
 	return versionedInterface
 }
 
-func (c *HcpOpenShiftCluster) ConvertToInternal(existing *coreapi.HCPOpenShiftCluster) (*coreapi.HCPOpenShiftCluster, error) {
-	out := &coreapi.HCPOpenShiftCluster{}
+func (c *HcpOpenShiftCluster) ConvertToInternal(existing *coreapi.Cluster) (*coreapi.Cluster, error) {
+	out := &coreapi.Cluster{}
 	errs := field.ErrorList{}
 
 	if c.ID != nil {
@@ -470,7 +470,7 @@ func (c *HcpOpenShiftCluster) ConvertToInternal(existing *coreapi.HCPOpenShiftCl
 
 // preserveUnknownClusterFields copies customer-facing fields from existing that
 // this API version doesn't know about.
-func preserveUnknownClusterFields(from, to *coreapi.HCPOpenShiftCluster) {
+func preserveUnknownClusterFields(from, to *coreapi.Cluster) {
 	for _, idmFrom := range from.CustomerProperties.ImageDigestMirrors {
 		to.CustomerProperties.ImageDigestMirrors = append(
 			to.CustomerProperties.ImageDigestMirrors, *idmFrom.DeepCopy())
@@ -488,9 +488,13 @@ func preserveUnknownClusterFields(from, to *coreapi.HCPOpenShiftCluster) {
 			to.CustomerProperties.Etcd.DataEncryption.CustomerManaged.Kms = &coreapi.KmsEncryptionProfile{}
 		}
 		to.CustomerProperties.Etcd.DataEncryption.CustomerManaged.Kms.Visibility = from.CustomerProperties.Etcd.DataEncryption.CustomerManaged.Kms.Visibility
+		// KeyVaultType was added in v20261001preview.
+		to.CustomerProperties.Etcd.DataEncryption.CustomerManaged.Kms.KeyVaultType = from.CustomerProperties.Etcd.DataEncryption.CustomerManaged.Kms.KeyVaultType
 	}
 	// CryptoRestrictions was added in v2026_06_30_preview
 	to.CustomerProperties.CryptoRestrictions = from.CustomerProperties.CryptoRestrictions
+	// ContainerRegistry was added in v2026_10_01_preview.
+	to.CustomerProperties.Platform.ContainerRegistry = from.CustomerProperties.Platform.ContainerRegistry
 }
 
 func normalizeManagedIdentity(identity *generated.ManagedServiceIdentity) *coreapi.ManagedServiceIdentity {

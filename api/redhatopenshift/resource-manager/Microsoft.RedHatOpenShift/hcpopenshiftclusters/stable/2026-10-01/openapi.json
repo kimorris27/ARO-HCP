@@ -1791,6 +1791,21 @@
         "url"
       ]
     },
+    "ContainerRegistryProfile": {
+      "type": "object",
+      "description": "Azure Container Registry configuration for a cluster.\nConfigures how worker nodes authenticate container image pulls\nfrom Azure Container Registry (ACR).",
+      "properties": {
+        "managedIdentity": {
+          "$ref": "#/definitions/UserAssignedIdentityResourceId",
+          "description": "The user-assigned managed identity used for container registry image pulls.",
+          "x-ms-mutability": [
+            "read",
+            "update",
+            "create"
+          ]
+        }
+      }
+    },
     "CustomerManagedEncryptionProfile": {
       "type": "object",
       "description": "Customer managed encryption key profile.",
@@ -2920,6 +2935,14 @@
             "update",
             "create"
           ]
+        },
+        "keyVaultType": {
+          "$ref": "#/definitions/KmsKeyVaultType",
+          "description": "The type of keyvault used for KMS encryption. Defaults to KeyVault when absent.",
+          "x-ms-mutability": [
+            "read",
+            "create"
+          ]
         }
       },
       "required": [
@@ -2989,6 +3012,30 @@
             "create"
           ]
         }
+      }
+    },
+    "KmsKeyVaultType": {
+      "type": "string",
+      "description": "The type of keyvault used for KMS encryption.",
+      "enum": [
+        "KeyVault",
+        "ManagedHSM"
+      ],
+      "x-ms-enum": {
+        "name": "KmsKeyVaultType",
+        "modelAsString": true,
+        "values": [
+          {
+            "name": "KeyVault",
+            "value": "KeyVault",
+            "description": "Standard Azure Key Vault."
+          },
+          {
+            "name": "ManagedHSM",
+            "value": "ManagedHSM",
+            "description": "Azure Managed Hardware Security Module."
+          }
+        ]
       }
     },
     "Label": {
@@ -3466,7 +3513,7 @@
         },
         "channelGroup": {
           "type": "string",
-          "description": "ChannelGroup is the name of the set to which this version belongs.\nEach version belongs to only a single set.\n\nIf not specified, the default value is 'stable'.",
+          "description": "ChannelGroup is the name of the set to which this version belongs.\nEach version belongs to only a single set.\n\nIf not specified, the default value is 'stable'.\n\nThis property is intended to be updateable, but that support is not yet\ncomplete. Until then, changing this value after node pool creation is rejected.",
           "x-ms-mutability": [
             "read",
             "update",
@@ -3493,7 +3540,7 @@
         },
         "channelGroup": {
           "type": "string",
-          "description": "ChannelGroup is the name of the set to which this version belongs.\nEach version belongs to only a single set.\n\nIf not specified, the default value is 'stable'.",
+          "description": "ChannelGroup is the name of the set to which this version belongs.\nEach version belongs to only a single set.\n\nIf not specified, the default value is 'stable'.\n\nThis property is intended to be updateable, but that support is not yet\ncomplete. Until then, changing this value after node pool creation is rejected.",
           "x-ms-mutability": [
             "read",
             "update",
@@ -3736,6 +3783,15 @@
             "create"
           ]
         },
+        "containerRegistry": {
+          "$ref": "#/definitions/ContainerRegistryProfile",
+          "description": "Azure Container Registry configuration for authenticating image pulls\non the cluster's worker nodes.",
+          "x-ms-mutability": [
+            "read",
+            "update",
+            "create"
+          ]
+        },
         "issuerUrl": {
           "type": "string",
           "format": "uri",
@@ -3758,6 +3814,15 @@
         "operatorsAuthentication": {
           "$ref": "#/definitions/OperatorsAuthenticationProfileUpdate",
           "description": "The configuration that the operators of the cluster have to authenticate to Azure",
+          "x-ms-mutability": [
+            "read",
+            "update",
+            "create"
+          ]
+        },
+        "containerRegistry": {
+          "$ref": "#/definitions/ContainerRegistryProfile",
+          "description": "Azure Container Registry configuration for authenticating image pulls\non the cluster's worker nodes.",
           "x-ms-mutability": [
             "read",
             "update",
@@ -4238,7 +4303,7 @@
         },
         "channelGroup": {
           "type": "string",
-          "description": "ChannelGroup is the name of the set to which this version belongs.\nEach version belongs to only a single set.\n\nIf not specified, the default value is 'stable'.",
+          "description": "ChannelGroup is the name of the set to which this version belongs.\nEach version belongs to only a single set.\n\nIf not specified, the default value is 'stable'.\n\nThis property is intended to be updateable, but that support is not yet\ncomplete. Until then, changing this value after cluster creation is rejected.",
           "x-ms-mutability": [
             "read",
             "update",
@@ -4265,7 +4330,7 @@
         },
         "channelGroup": {
           "type": "string",
-          "description": "ChannelGroup is the name of the set to which this version belongs.\nEach version belongs to only a single set.\n\nIf not specified, the default value is 'stable'.",
+          "description": "ChannelGroup is the name of the set to which this version belongs.\nEach version belongs to only a single set.\n\nIf not specified, the default value is 'stable'.\n\nThis property is intended to be updateable, but that support is not yet\ncomplete. Until then, changing this value after cluster creation is rejected.",
           "x-ms-mutability": [
             "read",
             "update",

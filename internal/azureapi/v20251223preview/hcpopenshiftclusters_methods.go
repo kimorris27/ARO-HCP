@@ -34,7 +34,7 @@ type HcpOpenShiftCluster struct {
 	generated.HcpOpenShiftCluster
 }
 
-var _ coreapi.VersionedCreatableResource[coreapi.HCPOpenShiftCluster] = &HcpOpenShiftCluster{}
+var _ coreapi.VersionedCreatableResource[coreapi.Cluster] = &HcpOpenShiftCluster{}
 
 func (h *HcpOpenShiftCluster) NewExternal() any {
 	return &HcpOpenShiftCluster{}
@@ -354,10 +354,10 @@ func newManagedServiceIdentity(from *coreapi.ManagedServiceIdentity) *generated.
 	}
 }
 
-// NewHCPOpenShiftCluster converts an internal representation to this API version.
+// NewCluster converts an internal representation to this API version.
 // If from is nil, returns a defaulted external object for use on the write path
 // where defaults are applied before unmarshaling the request body.
-func (v version) NewHCPOpenShiftCluster(from *coreapi.HCPOpenShiftCluster) coreapi.VersionedHCPOpenShiftCluster {
+func (v version) NewCluster(from *coreapi.Cluster) coreapi.VersionedCluster {
 	if from == nil {
 		ret := &HcpOpenShiftCluster{}
 		SetDefaultValuesCluster(ret)
@@ -403,8 +403,8 @@ func (c *HcpOpenShiftCluster) GetVersion() coreapi.Version {
 	return versionedInterface
 }
 
-func (c *HcpOpenShiftCluster) ConvertToInternal(existing *coreapi.HCPOpenShiftCluster) (*coreapi.HCPOpenShiftCluster, error) {
-	out := &coreapi.HCPOpenShiftCluster{}
+func (c *HcpOpenShiftCluster) ConvertToInternal(existing *coreapi.Cluster) (*coreapi.Cluster, error) {
+	out := &coreapi.Cluster{}
 	errs := field.ErrorList{}
 
 	// Reject null on required fields. On the PATCH path, JSON merge-patch
@@ -432,12 +432,8 @@ func (c *HcpOpenShiftCluster) ConvertToInternal(existing *coreapi.HCPOpenShiftCl
 			}
 		}
 		if c.Properties.Platform != nil {
-			if c.Properties.Platform.VnetIntegrationSubnetID == nil {
-				// TODO: Remove this check when v20240610preview is removed and
-				// vnetIntegrationSubnetId is enforced via validate.RequiredPointer
-				// in validateCustomerPlatformProfile.
-				errs = append(errs, field.Required(field.NewPath("properties", "platform", "vnetIntegrationSubnetId"), "field cannot be null"))
-			} else if len(*c.Properties.Platform.VnetIntegrationSubnetID) == 0 {
+			// Nil requiredness is feature-aware and checked by cluster validation.
+			if c.Properties.Platform.VnetIntegrationSubnetID != nil && len(*c.Properties.Platform.VnetIntegrationSubnetID) == 0 {
 				errs = append(errs, field.Invalid(field.NewPath("properties", "platform", "vnetIntegrationSubnetId"), "", "field cannot be empty string"))
 			}
 		}
@@ -528,11 +524,23 @@ func (c *HcpOpenShiftCluster) ConvertToInternal(existing *coreapi.HCPOpenShiftCl
 
 // preserveUnknownClusterFields copies customer-facing fields from existing that
 // this API version doesn't know about.
-func preserveUnknownClusterFields(from, to *coreapi.HCPOpenShiftCluster) {
+func preserveUnknownClusterFields(from, to *coreapi.Cluster) {
 	// Ingress was added in v2026_06_30_preview.
 	to.CustomerProperties.Ingress = from.CustomerProperties.Ingress
 	// CryptoRestrictions was added in v2026_06_30_preview
 	to.CustomerProperties.CryptoRestrictions = from.CustomerProperties.CryptoRestrictions
+	// KeyVaultType was added in v20261001preview.
+	if from.CustomerProperties.Etcd.DataEncryption.CustomerManaged != nil && from.CustomerProperties.Etcd.DataEncryption.CustomerManaged.Kms != nil {
+		if to.CustomerProperties.Etcd.DataEncryption.CustomerManaged == nil {
+			to.CustomerProperties.Etcd.DataEncryption.CustomerManaged = &coreapi.CustomerManagedEncryptionProfile{}
+		}
+		if to.CustomerProperties.Etcd.DataEncryption.CustomerManaged.Kms == nil {
+			to.CustomerProperties.Etcd.DataEncryption.CustomerManaged.Kms = &coreapi.KmsEncryptionProfile{}
+		}
+		to.CustomerProperties.Etcd.DataEncryption.CustomerManaged.Kms.KeyVaultType = from.CustomerProperties.Etcd.DataEncryption.CustomerManaged.Kms.KeyVaultType
+	}
+	// ContainerRegistry was added in v2026_10_01_preview.
+	to.CustomerProperties.Platform.ContainerRegistry = from.CustomerProperties.Platform.ContainerRegistry
 }
 
 func normalizeManagedIdentity(identity *generated.ManagedServiceIdentity) *coreapi.ManagedServiceIdentity {

@@ -1,12 +1,12 @@
 acm:
   mce:
     bundle:
-      digest: sha256:236e9bd535e3281bc8b878b198ca82fca4dcbac18f5500f58aaba63b5829bf39
+      digest: sha256:b32b15dd72581e52fe2488d90478cdc758d79e659c489545ef082090cb9a83c5
       registry: quay.io
       repository: redhat-user-workloads/crt-redhat-acm-tenant/mce-operator-bundle-mce-217
   operator:
     bundle:
-      digest: sha256:dacdf774da4fdf5711026d7aba6904377011c1cf2cdf3986b0e5185480fe2fc1
+      digest: sha256:df578499c052e134b0d2609d8852389586ec21e704938fe9b3f570c70c8845df
       registry: quay.io
       repository: redhat-user-workloads/crt-redhat-acm-tenant/acm-operator-bundle-acm-217
 acr:
@@ -68,7 +68,7 @@ administration:
   sreServiceTag: CorpNetSaw
 aksCommandRuntime:
   image:
-    digest: sha256:1fa09488bf407f4b1bfd44f02ff60af191218075be0a2050d737165acfcbda23
+    digest: sha256:161971cdd3bfe66be6a9b96d67fabf8c4b54a88b841add1aaced26b0a00358b4
     registry: mcr.microsoft.com
     repository: aks/command/runtime
 alertEventsEventHub:
@@ -82,15 +82,15 @@ armHelperTenantId: 64dc69e4-d083-49fc-9569-ebece1dd1408
 arobit:
   forwarder:
     image:
-      digest: sha256:9f61c8da15b7578f04d809e2ee60266aca19fc9aab53f382123dafe0fee6f818
+      digest: sha256:eb3e2e068172121a9ca133c5d17784df770dacc104f20c7d4a7df5f1c70e8a08
       registry: mcr.microsoft.com
       repository: oss/v2/fluent/fluent-bit
     resources:
       limits:
         memory: 1248Mi
       requests:
-        cpu: 250m
-        memory: 256Mi
+        cpu: 450m
+        memory: 472Mi
   kusto:
     buffering: true
     enabled: true
@@ -98,7 +98,7 @@ arobit:
   mdsd:
     enabled: false
     image:
-      digest: sha256:5eca8f713c64383bc545dd55f4af4020fd5db0c392d891cdc441765a2f7e52c3
+      digest: sha256:5c29681bb4b38d08ca21c31c4553bab72e8e9c260dc0ec875e1d014268a9e580
       registry: mcr.microsoft.com
       repository: geneva/distroless/mdsd
 auditLogsEventHub:
@@ -131,16 +131,13 @@ backend:
       limits:
         memory: unlimited
       requests:
-        cpu: 475m
+        cpu: 700m
         memory: 1Gi
     serviceAccountName: backend
   logVerbosity: 4
   maestro:
     sourceEnvironmentIdentifier: arohcpperf
   managedIdentityName: backend
-  tracing:
-    address: ""
-    exporter: ""
 billing:
   aub:
     accountName: ""
@@ -187,7 +184,7 @@ clustersService:
   deployDebugJobs: false
   environment: arohcpperf
   image:
-    digest: sha256:ea75b70cae009f8d77d8d0857f7bdb011ff55c9f867c121962849dec25da3867
+    digest: sha256:39b62d34c0ae6caad264fcc2a086fe84c7a97da3f7baab017f01c28e10c3ba6f
     registry: quay.io
     repository: app-sre/aro-hcp-clusters-service
   k8s:
@@ -201,7 +198,7 @@ clustersService:
       limits:
         memory: unlimited
       requests:
-        cpu: 450m
+        cpu: 630m
         memory: 150Mi
     serviceAccountName: clusters-service
   managedIdentityName: clusters-service
@@ -224,9 +221,6 @@ clustersService:
     zoneRedundantMode: Auto
   provisionShardClusterLimit: 100
   provisionShardStatus: active
-  tracing:
-    address: ""
-    exporter: ""
 clustersServiceArmHelperCertName: armHelperCert2
 clustersServiceArmHelperClientId: 3331e670-0804-48e8-a086-6241671ddc93
 customExporter:
@@ -298,6 +292,9 @@ fleet:
         memory: 512Mi
     serviceAccountName: fleet
   managedIdentityName: fleet
+  nodePoolPlanning:
+    profile: ci
+    zones: ""
   registration:
     autoApproveStamps: true
     stampIdentifier: "1"
@@ -309,6 +306,8 @@ frontend:
     issuer: Self
     name: frontend-cert-perf-usw3ptest
     san: rp.usw3ptest.hcpsvc.osadev.cloud
+  clusterScopedIdentitiesConfig:
+    roleSetName: dev
   cosmosDB:
     billingContainerMaxScale: 4000
     disableLocalAuth: true
@@ -336,9 +335,6 @@ frontend:
     serviceAccountName: frontend
   logVerbosity: 0
   managedIdentityName: frontend
-  tracing:
-    address: ""
-    exporter: ""
 geneva:
   actions:
     allowedAcisExtensions: AzureRedHatHypershiftExtension,Azure Red Hat Hypershift
@@ -490,7 +486,7 @@ hcpRecovery:
 hypershift:
   additionalInstallArg: --enable-cpo-overrides --disable-capi-migration
   image:
-    digest: sha256:0116fcc33ef9bf73984848689ed3020ca3f1a28ded8261d132e0581d760ac32b
+    digest: sha256:263ab1ec7f7d67ce658cd035eb650096dd172f0615f82c33677b4ac809b8364d
     registry: quay.io
     repository: redhat-services-prod/crt-redhat-acm-tenant/hypershift/hypershift-operator
   limitClusterSizes: true
@@ -503,7 +499,7 @@ hypershift:
     registry: quay.io
     repository: redhat-user-workloads/crt-redhat-acm-tenant/hypershift-shared-ingress-main
 imageRegistryPolicy:
-  extraAllowedRegistries: docker.io/jaegertracing,docker.io/grafana,docker.io/otel,docker.io/library/postgres
+  extraAllowedRegistries: docker.io/grafana,docker.io/library/postgres
   validationActions: Deny
 imageSync:
   environmentName: aro-hcp-image-sync
@@ -534,15 +530,15 @@ kubeApplier:
       limits:
         memory: unlimited
       requests:
-        cpu: 100m
-        memory: 128Mi
+        cpu: 231m
+        memory: 224Mi
     serviceAccountName: kube-applier
   managedIdentityName: kube-applier
   partitionKey: /providers/microsoft.redhatopenshift/stamps/1/managementclusters/default
 kubeEvents:
   enabled: true
   image:
-    digest: sha256:7246ca0f71c274f1fff5c944a8dc4c4663fe7a8ee4cdff206fdab7b5f836da2e
+    digest: sha256:54b14654077ec8c910ff0eeeda191bb45421c6496b2211751fbfd13b38779a46
     registry: kubernetesshared.azurecr.io
     repository: shared/kube-events
   k8s:
@@ -642,9 +638,11 @@ maestro:
     loglevel: 2
     managedIdentityName: maestro-server
     mqttClientName: maestro-server-usw3ptest
-    tracing:
-      address: ""
-      exporter: ""
+maestroMqttEventHub:
+  enabled: false
+  kustoConsumerGroupName: MaestroMqttToKusto
+  kustoDataConnectionName: perf-westus3-maestro-mqtt
+  name: maestro-mqtt-connections
 mgmt:
   aks:
     clusterOutboundIPAddressIPTags: ""
@@ -660,7 +658,7 @@ mgmt:
       name: infra
       osDiskSizeGB: 32
       poolCount: 2
-      vmSize: Standard_D2s_v3
+      vmSize: Standard_D4s_v3
       zoneRedundantMode: Auto
       zones: ""
     kubernetesVersion: "1.35"
@@ -712,7 +710,7 @@ mgmt:
           sha: 01038e7de14b78d702d2849c3aad72fd25903c4765af63cf16aa3398f5d5f2dd
     kubeStateMetrics:
       image:
-        digest: sha256:9e63919b9dde3a44483a565c55744abf9eab54314586f01a631a42b1104d5f2a
+        digest: sha256:c5d026c4a8335c2d098ce04776e25babc3e7773e70817b5b709f388bb52488d2
         registry: mcr.microsoft.com/oss/v2
         repository: kubernetes/kube-state-metrics
     namespace: prometheus
@@ -721,18 +719,18 @@ mgmt:
       image:
         registry: mcr.microsoft.com/oss/v2
         repository: prometheus/prometheus-config-reloader
-        sha: b840d65d98ba99f4d62329db721714b36ec23d7a0c8721d1fdb4fc839f97cf76
+        sha: 5fc5d09d0245cc1e7c6432ca9b0ebcc652c047b550d0289ea45725c14343585d
     prometheusOperator:
       image:
         registry: mcr.microsoft.com/oss/v2
         repository: prometheus/prometheus-operator
-        sha: be4e1b8bf4b8cc868cfa993818ed94e2536adc15713fc64942ce6a47d1bbabb9
+        sha: 9c285c83d939df7d0bdf27287562bb6fcf8fd6ab639d899abba1f14a0c2d5647
       version: ""
     prometheusSpec:
       image:
         registry: mcr.microsoft.com/oss/v2
         repository: prometheus/prometheus
-        sha: 92fa8f5e91a0e02e0107c346f6c66657738dbf394946e52c208150fd498554bd
+        sha: 7ef9c1d80e4e8e1eec1a207166af22930c8f11200f25001d1a3285b30b4f13f9
       replicas: 2
       resources:
         limits:
@@ -792,7 +790,7 @@ mgmtAgent:
     replicas: 2
     resources:
       requests:
-        cpu: 100m
+        cpu: 313m
         memory: 768Mi
     serviceAccountName: mgmt-agent
   managedIdentityName: mgmt-agent
@@ -835,10 +833,12 @@ mise:
     audience: 6dae42f8-4368-4678-94ff-3960e28e3630
     authorityFQDN: sts.windows.net
     policyLabel: Session Gate
-  tracing:
-    address: ""
-    exporter: ""
 monitoring:
+  adxIntegrationEnabled: false
+  adxIntegrationGeographies: ""
+  adxIntegrationScenario: ""
+  adxIntegrationTargetResourceId: ""
+  adxKustoAccessEnabled: false
   alertRuleOwningTeamTag: ""
   alertSeverityCeiling: 0
   alertsEnabled: true
@@ -969,7 +969,7 @@ secretSyncController:
         memory: 100Mi
     serviceAccountName: secrets-store-sync-controller-manager
   providerImage:
-    digest: sha256:844922d58d7633a9187fad4b37ab132c50dd263531242b444c69d41d93083175
+    digest: sha256:519f3891316ae4e00900b0ff0b67885ee9295c126f4cd79f38018b1747d3ea5f
     registry: mcr.microsoft.com
     repository: oss/v2/azure/secrets-store/provider-azure
 serviceKeyVault:
@@ -1050,6 +1050,7 @@ svc:
       vmSize: Standard_D2s_v3
       zoneRedundantMode: Auto
       zones: ""
+    systemPoolOnly: false
     tags: clusterType=svc-cluster,persist=true
     upgradeSettings:
       maxSurge: 10%
@@ -1087,7 +1088,7 @@ svc:
           sha: 01038e7de14b78d702d2849c3aad72fd25903c4765af63cf16aa3398f5d5f2dd
     kubeStateMetrics:
       image:
-        digest: sha256:9e63919b9dde3a44483a565c55744abf9eab54314586f01a631a42b1104d5f2a
+        digest: sha256:c5d026c4a8335c2d098ce04776e25babc3e7773e70817b5b709f388bb52488d2
         registry: mcr.microsoft.com/oss/v2
         repository: kubernetes/kube-state-metrics
     namespace: prometheus
@@ -1096,18 +1097,18 @@ svc:
       image:
         registry: mcr.microsoft.com/oss/v2
         repository: prometheus/prometheus-config-reloader
-        sha: b840d65d98ba99f4d62329db721714b36ec23d7a0c8721d1fdb4fc839f97cf76
+        sha: 5fc5d09d0245cc1e7c6432ca9b0ebcc652c047b550d0289ea45725c14343585d
     prometheusOperator:
       image:
         registry: mcr.microsoft.com/oss/v2
         repository: prometheus/prometheus-operator
-        sha: be4e1b8bf4b8cc868cfa993818ed94e2536adc15713fc64942ce6a47d1bbabb9
+        sha: 9c285c83d939df7d0bdf27287562bb6fcf8fd6ab639d899abba1f14a0c2d5647
       version: ""
     prometheusSpec:
       image:
         registry: mcr.microsoft.com/oss/v2
         repository: prometheus/prometheus
-        sha: 92fa8f5e91a0e02e0107c346f6c66657738dbf394946e52c208150fd498554bd
+        sha: 7ef9c1d80e4e8e1eec1a207166af22930c8f11200f25001d1a3285b30b4f13f9
       replicas: 2
       resources:
         limits:
@@ -1180,15 +1181,15 @@ swiftRecorder:
 tenantId: 64dc69e4-d083-49fc-9569-ebece1dd1408
 velero:
   azurePlugin:
-    digest: sha256:503d6342c590c430e1311090b11351dbd8776c2f02c84ffa6e3b19d7f02187be
+    digest: sha256:08ab28090839658c447acf8b202b6816c4818c9b387ccad275c0e264f8b477e0
     registry: registry.stage.redhat.io
     repository: oadp/oadp-velero-plugin-for-microsoft-azure-rhel9
   enableInstantAccess: true
   hypershiftPlugin:
-    digest: sha256:fa29fe80b67f5ff80b89b51f0ca039f7b9b7fb6d66fa9ef124e8ddf2a29c2bd6
+    digest: sha256:63d4a2c9050fcc9944ddd6e9ac510259b33dffb878926735b4303258926ad362
     registry: registry.stage.redhat.io
     repository: oadp/oadp-hypershift-velero-plugin-rhel9
   server:
-    digest: sha256:a6de7988701b0759bb4f29d28d229a0b427c5d2c25653bfed59c0a1a18ad4280
+    digest: sha256:3fbc7b8a25ead4c6cbee21352793005452c3eb6f9a72ac7cd86092b80ef06da4
     registry: registry.stage.redhat.io
     repository: oadp/oadp-velero-rhel9

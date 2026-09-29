@@ -48,32 +48,35 @@ import (
 // --- Types from deployment_params.go ---
 
 type ClusterParams20261001 struct {
-	OpenshiftVersionId            string
-	ClusterName                   string
-	ManagedResourceGroupName      string
-	NsgResourceID                 string
-	NsgName                       string
-	SubnetResourceID              string
-	SubnetName                    string
-	VnetName                      string
-	UserAssignedIdentitiesProfile *hcpsdk20261001.UserAssignedIdentitiesProfile
-	Identity                      *hcpsdk20261001.ManagedServiceIdentity
-	KeyVaultName                  string
-	EtcdEncryptionKeyName         string
-	EtcdEncryptionKeyVersion      string
-	EncryptionKeyManagementMode   string
-	EncryptionType                string
-	VnetIntegrationSubnetID       string
-	KeyVaultVisibility            string
-	IngressType                   string
-	Network                       NetworkConfig
-	APIVisibility                 string
-	ImageRegistryState            string
-	ChannelGroup                  string
-	AuthorizedCIDRs               []*string
-	Autoscaling                   *hcpsdk20261001.ClusterAutoscalingProfile
-	CryptoRestrictions            *hcpsdk20261001.CryptoRestrictions
-	Tags                          map[string]*string
+	OpenshiftVersionId               string
+	ClusterName                      string
+	ManagedResourceGroupName         string
+	NsgResourceID                    string
+	NsgName                          string
+	SubnetResourceID                 string
+	SubnetName                       string
+	VnetName                         string
+	UserAssignedIdentitiesProfile    *hcpsdk20261001.UserAssignedIdentitiesProfile
+	Identity                         *hcpsdk20261001.ManagedServiceIdentity
+	KeyVaultName                     string
+	EtcdEncryptionKeyName            string
+	EtcdEncryptionKeyVersion         string
+	KeyVaultType                     string
+	EncryptionKeyManagementMode      string
+	EncryptionType                   string
+	VnetIntegrationSubnetID          string
+	DisableSwift                     bool // Test-only networking choice, independent of visibility.
+	KeyVaultVisibility               string
+	IngressType                      string
+	Network                          NetworkConfig
+	APIVisibility                    string
+	ImageRegistryState               string
+	ChannelGroup                     string
+	AuthorizedCIDRs                  []*string
+	Autoscaling                      *hcpsdk20261001.ClusterAutoscalingProfile
+	CryptoRestrictions               *hcpsdk20261001.CryptoRestrictions
+	ContainerRegistryManagedIdentity *string
+	Tags                             map[string]*string
 }
 
 type NodePoolParams20261001 struct {
@@ -95,12 +98,14 @@ type NodePoolParams20261001 struct {
 	AvailabilityZone string
 	AutoRepair       bool
 	Tags             map[string]*string
+	EncryptionSetID  string
 }
 
 // --- Functions from deployment_params.go ---
 
 func NewDefaultClusterParams20261001() ClusterParams20261001 {
 	params := ClusterParams20261001{
+		DisableSwift:       true,
 		OpenshiftVersionId: DefaultOpenshiftControlPlaneVersionId(),
 		Network: NetworkConfig{
 			NetworkType: "OVNKubernetes",
@@ -471,10 +476,11 @@ func BuildHCPClusterFromParams20261001(
 		}
 	}
 
-	return hcpsdk20261001.HcpOpenShiftCluster{
+	tags, vnetIntegrationSubnetID := buildClusterNetworking(parameters.DisableSwift, parameters.Tags, parameters.VnetIntegrationSubnetID)
+	cluster := hcpsdk20261001.HcpOpenShiftCluster{
 		Location: to.Ptr(location),
 		Identity: identity,
-		Tags:     parameters.Tags,
+		Tags:     tags,
 		Properties: &hcpsdk20261001.HcpOpenShiftClusterProperties{
 			Version: &hcpsdk20261001.VersionProfile{
 				ID:           to.Ptr(parameters.OpenshiftVersionId),
@@ -484,7 +490,7 @@ func BuildHCPClusterFromParams20261001(
 				ManagedResourceGroup:    to.Ptr(parameters.ManagedResourceGroupName),
 				NetworkSecurityGroupID:  to.Ptr(parameters.NsgResourceID),
 				SubnetID:                to.Ptr(parameters.SubnetResourceID),
-				VnetIntegrationSubnetID: to.Ptr(parameters.VnetIntegrationSubnetID),
+				VnetIntegrationSubnetID: vnetIntegrationSubnetID,
 				OperatorsAuthentication: &hcpsdk20261001.OperatorsAuthenticationProfile{
 					UserAssignedIdentities: uamis,
 				},
@@ -512,20 +518,35 @@ func BuildHCPClusterFromParams20261001(
 					KeyManagementMode: to.Ptr(hcpsdk20261001.EtcdDataEncryptionKeyManagementModeType(parameters.EncryptionKeyManagementMode)),
 					CustomerManaged: &hcpsdk20261001.CustomerManagedEncryptionProfile{
 						EncryptionType: to.Ptr(hcpsdk20261001.CustomerManagedEncryptionType(parameters.EncryptionType)),
-						Kms: &hcpsdk20261001.KmsEncryptionProfile{
-							VaultName:  to.Ptr(parameters.KeyVaultName),
-							Visibility: to.Ptr(hcpsdk20261001.KeyVaultVisibility(parameters.KeyVaultVisibility)),
-							ActiveKey: &hcpsdk20261001.KmsKey{
-								Name:    to.Ptr(parameters.EtcdEncryptionKeyName),
-								Version: to.Ptr(parameters.EtcdEncryptionKeyVersion),
-							},
-						},
+						Kms:            buildKmsEncryptionProfile20261001(parameters),
 					},
 				},
 			},
 			ImageDigestMirrors: imageDigestMirrors,
 		},
-	}, nil
+	}
+
+	if parameters.ContainerRegistryManagedIdentity != nil {
+		cluster.Properties.Platform.ContainerRegistry = &hcpsdk20261001.ContainerRegistryProfile{
+			ManagedIdentity: parameters.ContainerRegistryManagedIdentity,
+		}
+	}
+	return cluster, nil
+}
+
+func buildKmsEncryptionProfile20261001(parameters ClusterParams20261001) *hcpsdk20261001.KmsEncryptionProfile {
+	kms := &hcpsdk20261001.KmsEncryptionProfile{
+		VaultName:  to.Ptr(parameters.KeyVaultName),
+		Visibility: to.Ptr(hcpsdk20261001.KeyVaultVisibility(parameters.KeyVaultVisibility)),
+		ActiveKey: &hcpsdk20261001.KmsKey{
+			Name:    to.Ptr(parameters.EtcdEncryptionKeyName),
+			Version: to.Ptr(parameters.EtcdEncryptionKeyVersion),
+		},
+	}
+	if parameters.KeyVaultType != "" {
+		kms.KeyVaultType = to.Ptr(hcpsdk20261001.KmsKeyVaultType(parameters.KeyVaultType))
+	}
+	return kms
 }
 
 func CreateHCPClusterAndWait20261001(
@@ -662,6 +683,10 @@ func BuildNodePoolFromParams20261001(
 		},
 	}
 
+	if parameters.EncryptionSetID != "" {
+		nodePool.Properties.Platform.OSDisk.EncryptionSetID = to.Ptr(parameters.EncryptionSetID)
+	}
+
 	if parameters.AutoScaling != nil {
 		nodePool.Properties.AutoScaling = &hcpsdk20261001.NodePoolAutoScaling{
 			Min: to.Ptr(parameters.AutoScaling.Min),
@@ -765,6 +790,15 @@ func (tc *perItOrDescribeTestContext) get20261001ClientFactoryUnlocked(ctx conte
 	tc.clientFactory20261001 = clientFactory
 
 	return tc.clientFactory20261001, nil
+}
+
+// GetHCPCluster20261001 fetches an HCP cluster
+func GetHCPCluster20261001(ctx context.Context, hcpClient *hcpsdk20261001.HcpOpenShiftClustersClient, resourceGroupName string, hcpClusterName string) (*hcpsdk20261001.HcpOpenShiftCluster, error) {
+	resp, err := hcpClient.Get(ctx, resourceGroupName, hcpClusterName, nil)
+	if err != nil {
+		return nil, err
+	}
+	return &resp.HcpOpenShiftCluster, nil
 }
 
 func (tc *perItOrDescribeTestContext) GetAdminRESTConfigForHCPCluster20261001(

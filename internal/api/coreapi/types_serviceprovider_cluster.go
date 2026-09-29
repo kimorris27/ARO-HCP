@@ -197,6 +197,7 @@ type ServiceProviderClusterStatus struct {
 	// The Condition Reason and Message are used to provide more details about the validation status.
 	// The Condition LastTransitionTime is used to track the last time the validation transitioned from one status to another.
 	Validations []metav1.Condition `json:"validations,omitempty"`
+
 	// MaestroReadonlyBundles contains a list of Maestro readonly bundles references.
 	// These bundles are used to retrieve particular K8s resources from the Management Cluster.
 	// The reference contains a mapping between the logical name we give to the Maestro bundle internally
@@ -316,7 +317,7 @@ type ServiceProviderClusterPlacementStatus struct {
 
 // ServiceProviderClusterMSIManagedIdentities holds Managed Service Identity (MSI)
 // based identity metadata resolved by FetchMSIIdentitiesInfo and consumed by ClusterIdentitySync to
-// populate HCPOpenShiftCluster.Identity.UserAssignedIdentities.
+// populate Cluster.Identity.UserAssignedIdentities.
 type ServiceProviderClusterMSIManagedIdentities struct {
 	// ControlPlaneOperatorsIdentities is a map containing resolved ClientID/PrincipalID
 	// for Managed Service Identity (MSI) based Azure User-Assigned Managed Identities

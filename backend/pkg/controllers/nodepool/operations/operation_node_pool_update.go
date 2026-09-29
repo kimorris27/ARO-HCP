@@ -162,7 +162,7 @@ func (c *operationNodePoolUpdate) SynchronizeOperation(ctx context.Context, key 
 	var persistErr *coreapi.CloudErrorBody
 	if operationalState.ProvisioningState == coreapi.ProvisioningStateFailed {
 		persistErr = &coreapi.CloudErrorBody{
-			Code:    coreapi.CloudErrorCodeInvalidRequestContent,
+			Code:    operationalState.CloudErrorCode,
 			Message: operationalState.Message,
 		}
 	}
@@ -180,12 +180,12 @@ func (c *operationNodePoolUpdate) SynchronizeOperation(ctx context.Context, key 
 	return nil
 }
 
-func (c *operationNodePoolUpdate) shouldReconcileOperationAndResourceStatus(nodePool *coreapi.HCPOpenShiftClusterNodePool) bool {
+func (c *operationNodePoolUpdate) shouldReconcileOperationAndResourceStatus(nodePool *coreapi.NodePool) bool {
 	return nodePool.ServiceProviderProperties.DeletionTimestamp == nil &&
 		nodePool.ServiceProviderProperties.ClusterServiceID != nil
 }
 
-func (c *operationNodePoolUpdate) determineOperationState(ctx context.Context, operation *coreapi.Operation, existingNodePool *coreapi.HCPOpenShiftClusterNodePool) (*operationbase.OperationState, error) {
+func (c *operationNodePoolUpdate) determineOperationState(ctx context.Context, operation *coreapi.Operation, existingNodePool *coreapi.NodePool) (*operationbase.OperationState, error) {
 	logger := utils.LoggerFromContext(ctx)
 
 	nodePoolCSID := existingNodePool.ServiceProviderProperties.ClusterServiceID
@@ -243,7 +243,7 @@ func (c *operationNodePoolUpdate) determineOperationState(ctx context.Context, o
 	return picked, nil
 }
 
-func (c *operationNodePoolUpdate) desiredVersionResolutionOperationState(ctx context.Context, operation *coreapi.Operation, existingNodePool *coreapi.HCPOpenShiftClusterNodePool, existingServiceProviderNodePool *coreapi.ServiceProviderNodePool) (*operationbase.OperationState, error) {
+func (c *operationNodePoolUpdate) desiredVersionResolutionOperationState(ctx context.Context, operation *coreapi.Operation, existingNodePool *coreapi.NodePool, existingServiceProviderNodePool *coreapi.ServiceProviderNodePool) (*operationbase.OperationState, error) {
 	resultingDesiredVersion := existingServiceProviderNodePool.Spec.NodePoolVersion.DesiredVersion
 	if resultingDesiredVersion == nil {
 		return nil, utils.TrackError(fmt.Errorf("service provider node pool has no desired version"))
@@ -301,10 +301,10 @@ func (c *operationNodePoolUpdate) desiredVersionResolutionOperationState(ctx con
 			existingNodePool.Properties.Version.ID,
 		)
 		c.desiredVersionMismatchFirstSeen.Remove(operationID)
-		return operationbase.NewOperationState(coreapi.ProvisioningStateFailed, msg), nil
+		return operationbase.NewFailedOperationState(coreapi.CloudErrorCodeInvalidRequestContent, msg, nil), nil
 	}
 	c.desiredVersionMismatchFirstSeen.Remove(operationID)
-	return operationbase.NewOperationState(coreapi.ProvisioningStateFailed, intentFailedCondition.Message), nil
+	return operationbase.NewFailedOperationState(coreapi.CloudErrorCodeInvalidRequestContent, intentFailedCondition.Message, nil), nil
 }
 
 func (c *operationNodePoolUpdate) clusterServiceNodePoolStatusOperationState(ctx context.Context, operation *coreapi.Operation, existingCSNodePoolStatus *arohcpv1alpha1.NodePoolStatus) (*operationbase.OperationState, error) {
@@ -314,9 +314,10 @@ func (c *operationNodePoolUpdate) clusterServiceNodePoolStatusOperationState(ctx
 		return nil, utils.TrackError(err)
 	}
 	logger.Info("new status via cluster-service", "newStatus", newOperationStatus, "newOperationError", opError)
-	msg := ""
+	state := operationbase.NewOperationState(newOperationStatus, "")
 	if opError != nil {
-		msg = opError.Message
+		state.Message = opError.Message
+		state.WithCloudErrorCode(opError.Code)
 	}
-	return operationbase.NewOperationState(newOperationStatus, msg), nil
+	return state, nil
 }

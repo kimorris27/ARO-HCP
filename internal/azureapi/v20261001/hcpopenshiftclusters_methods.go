@@ -35,7 +35,7 @@ type HcpOpenShiftCluster struct {
 	generated.HcpOpenShiftCluster
 }
 
-var _ coreapi.VersionedCreatableResource[coreapi.HCPOpenShiftCluster] = &HcpOpenShiftCluster{}
+var _ coreapi.VersionedCreatableResource[coreapi.Cluster] = &HcpOpenShiftCluster{}
 
 func (h *HcpOpenShiftCluster) NewExternal() any {
 	return &HcpOpenShiftCluster{}
@@ -236,7 +236,17 @@ func newPlatformProfile(from *coreapi.CustomerPlatformProfile, from2 *coreapi.Se
 		OutboundType:            metadataapihelpers.PtrOrNil(generated.OutboundType(from.OutboundType)),
 		NetworkSecurityGroupID:  metadataapihelpers.ResourceIDToStringPtr(from.NetworkSecurityGroupID),
 		OperatorsAuthentication: metadataapihelpers.PtrOrNil(newOperatorsAuthenticationProfile(&from.OperatorsAuthentication)),
+		ContainerRegistry:       newContainerRegistryProfile(from.ContainerRegistry.PullManagedIdentity),
 		IssuerURL:               metadataapihelpers.PtrOrNil(from2.IssuerURL),
+	}
+}
+
+func newContainerRegistryProfile(from *azcorearm.ResourceID) *generated.ContainerRegistryProfile {
+	if from == nil {
+		return nil
+	}
+	return &generated.ContainerRegistryProfile{
+		ManagedIdentity: metadataapihelpers.ResourceIDToStringPtr(from),
 	}
 }
 
@@ -285,9 +295,10 @@ func newKmsEncryptionProfile(from *coreapi.KmsEncryptionProfile) generated.KmsEn
 		return generated.KmsEncryptionProfile{}
 	}
 	return generated.KmsEncryptionProfile{
-		ActiveKey:  metadataapihelpers.PtrOrNil(newKmsKey(&from.ActiveKey)),
-		VaultName:  metadataapihelpers.PtrOrNil(from.ActiveKey.VaultName),
-		Visibility: metadataapihelpers.PtrOrNil(generated.KeyVaultVisibility(from.Visibility)),
+		ActiveKey:    metadataapihelpers.PtrOrNil(newKmsKey(&from.ActiveKey)),
+		KeyVaultType: metadataapihelpers.PtrOrNil(generated.KmsKeyVaultType(from.KeyVaultType)),
+		VaultName:    metadataapihelpers.PtrOrNil(from.ActiveKey.VaultName),
+		Visibility:   metadataapihelpers.PtrOrNil(generated.KeyVaultVisibility(from.Visibility)),
 	}
 }
 func newKmsKey(from *coreapi.KmsKey) generated.KmsKey {
@@ -340,7 +351,7 @@ func newActiveVersions(from []coreapi.HCPClusterActiveVersion) []*generated.Clus
 	return out
 }
 
-func newClusterResourceStatus(from *coreapi.HCPOpenShiftClusterStatus) *generated.ClusterResourceStatus {
+func newClusterResourceStatus(from *coreapi.ClusterStatus) *generated.ClusterResourceStatus {
 	if from == nil {
 		return nil
 	}
@@ -424,10 +435,10 @@ func newManagedServiceIdentity(from *coreapi.ManagedServiceIdentity) *generated.
 	}
 }
 
-// NewHCPOpenShiftCluster converts an internal representation to this API version.
+// NewCluster converts an internal representation to this API version.
 // If from is nil, returns a defaulted external object for use on the write path
 // where defaults are applied before unmarshaling the request body.
-func (v version) NewHCPOpenShiftCluster(from *coreapi.HCPOpenShiftCluster) coreapi.VersionedHCPOpenShiftCluster {
+func (v version) NewCluster(from *coreapi.Cluster) coreapi.VersionedCluster {
 	if from == nil {
 		ret := &HcpOpenShiftCluster{}
 		SetDefaultValuesCluster(ret)
@@ -476,8 +487,8 @@ func (c *HcpOpenShiftCluster) GetVersion() coreapi.Version {
 	return versionedInterface
 }
 
-func (c *HcpOpenShiftCluster) ConvertToInternal(existing *coreapi.HCPOpenShiftCluster) (*coreapi.HCPOpenShiftCluster, error) {
-	out := &coreapi.HCPOpenShiftCluster{}
+func (c *HcpOpenShiftCluster) ConvertToInternal(existing *coreapi.Cluster) (*coreapi.Cluster, error) {
+	out := &coreapi.Cluster{}
 	errs := field.ErrorList{}
 
 	// Reject null on required fields. On the PATCH path, JSON merge-patch
@@ -505,12 +516,8 @@ func (c *HcpOpenShiftCluster) ConvertToInternal(existing *coreapi.HCPOpenShiftCl
 			}
 		}
 		if c.Properties.Platform != nil {
-			if c.Properties.Platform.VnetIntegrationSubnetID == nil {
-				// TODO: Remove this check when v20240610preview is removed and
-				// vnetIntegrationSubnetId is enforced via validate.RequiredPointer
-				// in validateCustomerPlatformProfile.
-				errs = append(errs, field.Required(field.NewPath("properties", "platform", "vnetIntegrationSubnetId"), "field cannot be null"))
-			} else if len(*c.Properties.Platform.VnetIntegrationSubnetID) == 0 {
+			// Nil requiredness is feature-aware and checked by cluster validation.
+			if c.Properties.Platform.VnetIntegrationSubnetID != nil && len(*c.Properties.Platform.VnetIntegrationSubnetID) == 0 {
 				errs = append(errs, field.Invalid(field.NewPath("properties", "platform", "vnetIntegrationSubnetId"), "", "field cannot be empty string"))
 			}
 		}
@@ -579,6 +586,8 @@ func (c *HcpOpenShiftCluster) ConvertToInternal(existing *coreapi.HCPOpenShiftCl
 		}
 		if c.Properties.Platform != nil {
 			errs = append(errs, normalizePlatform(field.NewPath("properties", "platform"), c.Properties.Platform, &out.CustomerProperties.Platform, &out.ServiceProviderProperties.Platform)...)
+			errs = append(errs, normalizeContainerRegistry(field.NewPath("properties", "platform", "containerRegistry"), c.Properties.Platform.ContainerRegistry, &out.CustomerProperties.Platform.ContainerRegistry.PullManagedIdentity)...)
+
 		}
 		if c.Properties.Autoscaling != nil {
 			normalizeAutoscaling(c.Properties.Autoscaling, &out.CustomerProperties.Autoscaling)
@@ -606,9 +615,9 @@ func (c *HcpOpenShiftCluster) ConvertToInternal(existing *coreapi.HCPOpenShiftCl
 }
 
 // preserveUnknownClusterFields copies customer-facing fields from existing that
-// this API version doesn't know about. Currently empty — no cross-version
-// customer fields exist yet between v20240610preview and v20260630preview.
-func preserveUnknownClusterFields(from, to *coreapi.HCPOpenShiftCluster) {
+// this API version doesn't know about. Currently empty — v20261001preview is
+// the latest version.
+func preserveUnknownClusterFields(from, to *coreapi.Cluster) {
 }
 
 func normalizeManagedIdentity(identity *generated.ManagedServiceIdentity) *coreapi.ManagedServiceIdentity {
@@ -709,6 +718,30 @@ func normalizePlatform(fldPath *field.Path, p *generated.PlatformProfile, out *c
 	return errs
 }
 
+func normalizeContainerRegistry(fldPath *field.Path, p *generated.ContainerRegistryProfile, out **azcorearm.ResourceID) field.ErrorList {
+	errs := field.ErrorList{}
+
+	if p == nil || p.ManagedIdentity == nil {
+		*out = nil
+		return errs
+	}
+
+	mi := strings.TrimSpace(*p.ManagedIdentity)
+	if mi == "" {
+		errs = append(errs, field.Invalid(fldPath.Child("managedIdentity"), *p.ManagedIdentity, "must be a non-empty resource ID or null to clear"))
+		return errs
+	}
+
+	resourceID, err := azcorearm.ParseResourceID(mi)
+	if err != nil {
+		errs = append(errs, field.Invalid(fldPath.Child("managedIdentity"), *p.ManagedIdentity, err.Error()))
+	} else {
+		*out = resourceID
+	}
+
+	return errs
+}
+
 func normalizeAutoscaling(p *generated.ClusterAutoscalingProfile, out *coreapi.ClusterAutoscalingProfile) {
 	out.MaxNodeProvisionTimeSeconds = metadataapihelpers.Deref(p.MaxNodeProvisionTimeSeconds)
 	out.MaxNodesTotal = metadataapihelpers.Deref(p.MaxNodesTotal)
@@ -746,6 +779,7 @@ func normalizeCustomerManaged(p *generated.CustomerManagedEncryptionProfile, out
 		normalizeActiveKey(p.Kms.ActiveKey, &out.Kms.ActiveKey)
 		out.Kms.ActiveKey.VaultName = metadataapihelpers.Deref(p.Kms.VaultName)
 		out.Kms.Visibility = metadataapi.KeyVaultVisibility(metadataapihelpers.Deref(p.Kms.Visibility))
+		out.Kms.KeyVaultType = string(metadataapihelpers.Deref(p.Kms.KeyVaultType))
 	} else {
 		out.Kms = nil
 	}

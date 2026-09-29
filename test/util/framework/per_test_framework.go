@@ -270,6 +270,12 @@ func (tc *perItOrDescribeTestContext) deleteCreatedResources(ctx context.Context
 	tc.contextLock.RUnlock()
 	ginkgo.GinkgoLogr.Info("deleting created resources")
 
+	if subscriptionID, err := tc.SubscriptionID(ctx); err != nil {
+		ginkgo.GinkgoLogr.Error(err, "failed to get subscription ID for role assignment cleanup")
+	} else if err := tc.cleanupRoleAssignments(ctx, subscriptionID); err != nil {
+		ginkgo.GinkgoLogr.Error(err, "failed to cleanup role assignments before resource group deletion")
+	}
+
 	opts := CleanupResourceGroupsOptions{
 		ResourceGroupNames: resourceGroupNames,
 		Timeout:            60 * time.Minute,
@@ -353,40 +359,82 @@ type CleanupResourceGroupsOptions struct {
 	ResourceGroupNames []string
 	Timeout            time.Duration
 	CleanupWorkflow    CleanupWorkflow
+	Concurrency        int
 	FPACredentials     FPACredentials
 }
 
 func (tc *perItOrDescribeTestContext) CleanupResourceGroups(ctx context.Context, opts CleanupResourceGroupsOptions) error {
-	// deletion takes a while, it's worth it to do this in parallel
-	wg := sync.WaitGroup{}
-	errCh := make(chan error, len(opts.ResourceGroupNames))
-	for _, currResourceGroupName := range opts.ResourceGroupNames {
-		wg.Add(1)
-		go func(ctx context.Context) {
-			defer wg.Done()
-			// prevent a stray panic from exiting the process. Don't do this generally because ginkgo/gomega rely on panics to function.
-			defer utilruntime.HandleCrashWithContext(ctx)
+	var cleanup func(context.Context, string) error
+	switch opts.CleanupWorkflow {
+	case CleanupWorkflowStandard:
+		cleanup = func(ctx context.Context, resourceGroupName string) error {
+			return tc.cleanupResourceGroup(ctx, resourceGroupName, opts.Timeout)
+		}
+	case CleanupWorkflowNoRP:
+		cleanup = func(ctx context.Context, resourceGroupName string) error {
+			return tc.cleanupResourceGroupNoRP(ctx, resourceGroupName, opts.Timeout, opts.FPACredentials)
+		}
+	default:
+		return fmt.Errorf("unsupported cleanup workflow %q", opts.CleanupWorkflow)
+	}
 
-			switch opts.CleanupWorkflow {
-			case CleanupWorkflowStandard:
-				if err := tc.cleanupResourceGroup(ctx, currResourceGroupName, opts.Timeout); err != nil {
-					errCh <- err
-				}
-			case CleanupWorkflowNoRP:
-				if err := tc.cleanupResourceGroupNoRP(ctx, currResourceGroupName, opts.Timeout, opts.FPACredentials); err != nil {
-					errCh <- err
-				}
+	return runResourceGroupCleanup(ctx, opts.ResourceGroupNames, opts.Concurrency, cleanup)
+}
+
+func runResourceGroupCleanup(
+	ctx context.Context,
+	resourceGroupNames []string,
+	concurrency int,
+	cleanup func(context.Context, string) error,
+) error {
+	if len(resourceGroupNames) == 0 {
+		return nil
+	}
+
+	if concurrency <= 0 || concurrency > len(resourceGroupNames) {
+		concurrency = len(resourceGroupNames)
+	}
+
+	var group errgroup.Group
+	group.SetLimit(concurrency)
+
+	var lock sync.Mutex
+	var errs []error
+	successful := 0
+
+	for _, resourceGroupName := range resourceGroupNames {
+		resourceGroupName := resourceGroupName
+		group.Go(func() error {
+			var err error
+			func() {
+				// Preserve the framework's panic logging and crash policy while recording recovered
+				// panics as cleanup failures when ReallyCrash is disabled.
+				defer utilruntime.HandleCrashWithContext(ctx, func(_ context.Context, recovered any) {
+					err = fmt.Errorf("panic during cleanup: %v", recovered)
+				})
+				err = cleanup(ctx, resourceGroupName)
+			}()
+
+			lock.Lock()
+			defer lock.Unlock()
+			if err != nil {
+				errs = append(errs, fmt.Errorf("resource group %q: %w", resourceGroupName, err))
+			} else {
+				successful++
 			}
-
-		}(ctx)
+			return nil
+		})
 	}
-	wg.Wait()
-	close(errCh)
 
-	errs := []error{}
-	for err := range errCh {
-		errs = append(errs, err)
-	}
+	_ = group.Wait()
+	logr.FromContextOrDiscard(ctx).Info(
+		"Finished resource group cleanup",
+		"total", len(resourceGroupNames),
+		"successful", successful,
+		"failed", len(errs),
+		"concurrency", concurrency,
+	)
+
 	return errors.Join(errs...)
 }
 
@@ -691,6 +739,7 @@ func (tc *perItOrDescribeTestContext) cleanupResourceGroup(ctx context.Context, 
 	// their globally-unique names stay reserved until purged. Purge them so a
 	// later run reusing a colliding vault name does not hit VaultAlreadyExists.
 	tc.purgeDeletedKeyVaultsInResourceGroup(ctx, resourceGroupName)
+	tc.purgeDeletedManagedHSMsInResourceGroup(ctx, resourceGroupName)
 
 	// we want non-conformant clusters to be visible at the end, without impeding our ability to clean up the resource group
 	return nonConformantErr
@@ -750,6 +799,7 @@ func (tc *perItOrDescribeTestContext) cleanupResourceGroupNoRP(ctx context.Conte
 	// Purge any Key Vaults left soft-deleted by the resource group deletion so
 	// their globally-unique names are immediately reusable by later runs.
 	tc.purgeDeletedKeyVaultsInResourceGroup(ctx, resourceGroupName)
+	tc.purgeDeletedManagedHSMsInResourceGroup(ctx, resourceGroupName)
 
 	return nil
 }
@@ -806,6 +856,11 @@ func (tc *perItOrDescribeTestContext) purgeDeletedKeyVaultsInResourceGroup(ctx c
 			if !strings.Contains(strings.ToLower(*deleted.Properties.VaultID), rgMarker) {
 				continue
 			}
+			if keyVaultPurgeProtected(deleted.Properties) {
+				ginkgo.GinkgoLogr.Info("skipping purge of soft-deleted key vault with purge protection enabled",
+					"keyVault", *deleted.Name, "resourceGroup", resourceGroupName)
+				continue
+			}
 			ginkgo.GinkgoLogr.Info("purging soft-deleted key vault",
 				"keyVault", *deleted.Name, "location", *deleted.Properties.Location, "resourceGroup", resourceGroupName)
 			poller, err := vaultsClient.BeginPurgeDeleted(ctx, *deleted.Name, *deleted.Properties.Location, nil)
@@ -826,6 +881,77 @@ func (tc *perItOrDescribeTestContext) purgeDeletedKeyVaultsInResourceGroup(ctx c
 				}
 				ginkgo.GinkgoLogr.Error(err, "failed to purge soft-deleted key vault; a colliding name may block a later run until it is purged or expires",
 					"keyVault", *deleted.Name, "resourceGroup", resourceGroupName)
+			}
+		}
+	}
+}
+
+// keyVaultPurgeProtected reports whether a soft-deleted vault has purge
+// protection enabled, meaning the purge API will reject any purge attempt.
+func keyVaultPurgeProtected(props *armkeyvault.DeletedVaultProperties) bool {
+	return props != nil && props.PurgeProtectionEnabled != nil && *props.PurgeProtectionEnabled
+}
+
+// purgeDeletedManagedHSMsInResourceGroup purges any soft-deleted Managed HSMs that belonged to the given resource group, mirroring purgeDeletedKeyVaultsInResourceGroup for the separate Managed HSM resource type whose globally-unique name is likewise reserved until purged. Best-effort: failures are logged but never fail cleanup.
+func (tc *perItOrDescribeTestContext) purgeDeletedManagedHSMsInResourceGroup(ctx context.Context, resourceGroupName string) {
+	ctx, cancel := context.WithTimeout(ctx, keyVaultPurgeTimeout)
+	defer cancel()
+
+	creds, err := tc.AzureCredential()
+	if err != nil {
+		ginkgo.GinkgoLogr.Error(err, "unable to purge soft-deleted managed HSMs: failed to get azure credentials", "resourceGroup", resourceGroupName)
+		return
+	}
+	subscriptionID, err := tc.SubscriptionID(ctx)
+	if err != nil {
+		ginkgo.GinkgoLogr.Error(err, "unable to purge soft-deleted managed HSMs: failed to get subscription id", "resourceGroup", resourceGroupName)
+		return
+	}
+	hsmsClient, err := armkeyvault.NewManagedHsmsClient(subscriptionID, creds, tc.perBinaryInvocationTestContext.getClientFactoryOptions())
+	if err != nil {
+		ginkgo.GinkgoLogr.Error(err, "unable to purge soft-deleted managed HSMs: failed to build managed HSM client", "resourceGroup", resourceGroupName)
+		return
+	}
+
+	rgMarker := strings.ToLower("/resourcegroups/" + resourceGroupName + "/")
+
+	pager := hsmsClient.NewListDeletedPager(nil)
+	for pager.More() {
+		page, err := pager.NextPage(ctx)
+		if err != nil {
+			ginkgo.GinkgoLogr.Error(err, "unable to list soft-deleted managed HSMs", "resourceGroup", resourceGroupName)
+			return
+		}
+		for _, deleted := range page.Value {
+			if deleted == nil || deleted.Name == nil || deleted.Properties == nil ||
+				deleted.Properties.MhsmID == nil || deleted.Properties.Location == nil {
+				continue
+			}
+			if !strings.Contains(strings.ToLower(*deleted.Properties.MhsmID), rgMarker) {
+				continue
+			}
+			if deleted.Properties.PurgeProtectionEnabled != nil && *deleted.Properties.PurgeProtectionEnabled {
+				ginkgo.GinkgoLogr.Info("skipping purge of soft-deleted managed HSM with purge protection enabled",
+					"managedHSM", *deleted.Name, "resourceGroup", resourceGroupName)
+				continue
+			}
+			ginkgo.GinkgoLogr.Info("purging soft-deleted managed HSM",
+				"managedHSM", *deleted.Name, "location", *deleted.Properties.Location, "resourceGroup", resourceGroupName)
+			poller, err := hsmsClient.BeginPurgeDeleted(ctx, *deleted.Name, *deleted.Properties.Location, nil)
+			if err != nil {
+				if IsNotFoundError(err) {
+					continue
+				}
+				ginkgo.GinkgoLogr.Error(err, "failed to start purge of soft-deleted managed HSM; a colliding name may block a later run until it is purged or expires",
+					"managedHSM", *deleted.Name, "resourceGroup", resourceGroupName)
+				continue
+			}
+			if _, err := poller.PollUntilDone(ctx, &runtime.PollUntilDoneOptions{Frequency: StandardPollInterval}); err != nil {
+				if IsNotFoundError(err) {
+					continue
+				}
+				ginkgo.GinkgoLogr.Error(err, "failed to purge soft-deleted managed HSM; a colliding name may block a later run until it is purged or expires",
+					"managedHSM", *deleted.Name, "resourceGroup", resourceGroupName)
 			}
 		}
 	}
